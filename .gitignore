@@ -2,3 +2,8 @@ node_modules/
 dist/
 .superpowers/
 *.log
+*.tsbuildinfo
+vite.config.d.ts
+vite.config.js
+vitest.config.d.ts
+vitest.config.js
