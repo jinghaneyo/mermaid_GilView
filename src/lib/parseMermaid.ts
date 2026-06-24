@@ -9,8 +9,6 @@ function ensureInit() {
   }
 }
 
-const EMPTY: ParsedGraph = { nodes: [], edges: [], direction: 'TB' }
-
 function normalizeDirection(raw: string | undefined): Direction {
   switch (raw) {
     case 'LR':
@@ -56,7 +54,8 @@ export async function parseMermaid(
 ): Promise<{ graph: ParsedGraph | null; error: string | null }> {
   const trimmed = code.trim()
   if (trimmed === '') {
-    return { graph: EMPTY, error: null }
+    // return a fresh object so callers can't mutate a shared constant
+    return { graph: { nodes: [], edges: [], direction: 'TB' }, error: null }
   }
 
   ensureInit()

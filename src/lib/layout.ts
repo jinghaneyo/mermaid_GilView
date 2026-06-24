@@ -5,7 +5,8 @@ const NODE_WIDTH = 160
 const NODE_HEIGHT = 44
 
 export function layout(graph: ParsedGraph): FlowGraph {
-  const g = new dagre.graphlib.Graph()
+  // multigraph: true is required to set named edges (preserves parallel edges)
+  const g = new dagre.graphlib.Graph({ multigraph: true })
   g.setGraph({ rankdir: graph.direction, nodesep: 50, ranksep: 60 })
   g.setDefaultEdgeLabel(() => ({}))
 
@@ -13,7 +14,8 @@ export function layout(graph: ParsedGraph): FlowGraph {
     g.setNode(n.id, { width: NODE_WIDTH, height: NODE_HEIGHT })
   })
   graph.edges.forEach((e) => {
-    g.setEdge(e.source, e.target)
+    // pass the edge id as the dagre edge name so parallel edges aren't deduped
+    g.setEdge(e.source, e.target, {}, e.id)
   })
 
   dagre.layout(g)
