@@ -3,6 +3,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   useNodesState,
@@ -63,6 +64,14 @@ function EditorInner() {
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
 
+  // 좌/우 패널 너비(px) — 스플리터 드래그로 조절
+  const [leftWidth, setLeftWidth] = useState(440)
+  const containerRef = useRef(null)
+
+  // 캔버스 테마 / 격자 표시
+  const [theme, setTheme] = useState('light') // 'light' | 'dark'
+  const [showGrid, setShowGrid] = useState(true)
+
   // 핸들러에서 최신 상태를 읽기 위한 ref 미러
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
@@ -121,10 +130,39 @@ function EditorInner() {
     syncCanvasToCode(nodesRef.current, edgesRef.current)
   }
 
+  // 스플리터 드래그 -> 왼쪽 패널 너비 조절
+  const onSplitterMouseDown = (e) => {
+    e.preventDefault()
+    const onMove = (ev) => {
+      const rect = containerRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const min = 240
+      const max = rect.width - 320
+      const w = Math.max(min, Math.min(max, ev.clientX - rect.left))
+      setLeftWidth(w)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  const btnClass =
+    'rounded-md border border-slate-300 bg-white/90 px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm hover:bg-white'
+
   return (
-    <div className="flex h-full w-full">
+    <div ref={containerRef} className="flex h-full w-full">
       {/* 왼쪽: Mermaid 코드 에디터 */}
-      <div className="flex w-2/5 min-w-[280px] max-w-[640px] flex-col border-r border-slate-700 bg-slate-900 text-slate-100">
+      <div
+        style={{ width: leftWidth }}
+        className="flex shrink-0 flex-col bg-slate-900 text-slate-100"
+      >
         <div className="flex items-center justify-between border-b border-slate-700 px-4 py-2.5">
           <h1 className="text-sm font-semibold tracking-tight">Mermaid 코드</h1>
           <span className="text-xs text-slate-400">flowchart (mermaid 파서)</span>
@@ -143,9 +181,37 @@ function EditorInner() {
         )}
       </div>
 
+      {/* 가운데: 드래그 스플리터 */}
+      <div
+        onMouseDown={onSplitterMouseDown}
+        title="드래그하여 패널 크기 조절"
+        className="w-1.5 shrink-0 cursor-col-resize bg-slate-700 transition-colors hover:bg-blue-500"
+      />
+
       {/* 오른쪽: React Flow 비주얼 캔버스 */}
-      <div className="flex-1 bg-slate-50">
+      <div
+        className={`relative flex-1 ${theme === 'dark' ? 'bg-slate-900' : 'bg-slate-50'}`}
+      >
+        {/* 툴바: 테마 / 격자 토글 */}
+        <div className="absolute right-3 top-3 z-10 flex gap-2">
+          <button
+            type="button"
+            onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
+            className={btnClass}
+          >
+            {theme === 'light' ? '🌙 다크' : '☀️ 라이트'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowGrid((g) => !g)}
+            className={btnClass}
+          >
+            {showGrid ? '⊞ 격자 끄기' : '⊞ 격자 켜기'}
+          </button>
+        </div>
+
         <ReactFlow
+          colorMode={theme}
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
@@ -156,9 +222,15 @@ function EditorInner() {
           fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}
         >
-          <Background color="#cbd5e1" gap={20} />
+          {showGrid && (
+            <Background
+              variant={BackgroundVariant.Lines}
+              gap={20}
+              color={theme === 'dark' ? '#334155' : '#e2e8f0'}
+            />
+          )}
           <Controls showInteractive={false} />
-          <MiniMap pannable zoomable className="!bg-white" />
+          <MiniMap pannable zoomable />
         </ReactFlow>
       </div>
     </div>
