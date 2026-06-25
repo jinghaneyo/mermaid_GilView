@@ -174,8 +174,8 @@ function ShapeNode({ data }) {
 
 const nodeTypes = { group: GroupNode, shape: ShapeNode }
 
-function EditorInner() {
-  const [code, setCode] = useState(INITIAL_CODE)
+function EditorInner({ initialCode, onCodeChange }) {
+  const [code, setCode] = useState(initialCode ?? INITIAL_CODE)
   const [error, setError] = useState(null)
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
@@ -259,9 +259,15 @@ function EditorInner() {
 
   // 초기 코드 1회 파싱
   useEffect(() => {
-    runParse(INITIAL_CODE)
+    runParse(code)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // 코드 변경(타이핑/캔버스 동기화)을 상위 탭 상태로 올려 보존
+  useEffect(() => {
+    if (onCodeChange) onCodeChange(code)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code])
 
   // 텍스트 입력 감지 -> 디바운스 후 파싱
   const handleCodeChange = (e) => {
@@ -406,10 +412,107 @@ function EditorInner() {
   )
 }
 
-export default function MermaidVisualEditor() {
+// 상단 탭 바: 여러 Mermaid 다이어그램을 탭으로 전환
+function TabBar({ tabs, activeId, onSelect, onAdd, onClose }) {
   return (
-    <ReactFlowProvider>
-      <EditorInner />
-    </ReactFlowProvider>
+    <div className="flex items-stretch gap-1 border-b border-slate-700 bg-slate-800 px-2 pt-1.5">
+      {tabs.map((t) => {
+        const active = t.id === activeId
+        return (
+          <div
+            key={t.id}
+            onClick={() => onSelect(t.id)}
+            className={`group flex cursor-pointer items-center gap-2 rounded-t-md px-3 py-1.5 text-sm ${
+              active
+                ? 'bg-slate-900 text-slate-100'
+                : 'bg-slate-700/50 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            <span className="max-w-[160px] truncate">{t.name}</span>
+            {tabs.length > 1 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onClose(t.id)
+                }}
+                className="rounded text-slate-400 hover:bg-slate-600 hover:text-white"
+                title="탭 닫기"
+              >
+                <span className="px-1">×</span>
+              </button>
+            )}
+          </div>
+        )
+      })}
+      <button
+        type="button"
+        onClick={onAdd}
+        title="새 다이어그램 탭"
+        className="ml-1 self-center rounded px-2 py-1 text-lg leading-none text-slate-300 hover:bg-slate-700 hover:text-white"
+      >
+        +
+      </button>
+    </div>
+  )
+}
+
+const NEW_TAB_CODE = 'graph TD\n  A[시작] --> B[종료]'
+
+export default function MermaidVisualEditor() {
+  const idRef = useRef(2)
+  const [tabs, setTabs] = useState([
+    { id: 1, name: '다이어그램 1', code: INITIAL_CODE },
+  ])
+  const [activeId, setActiveId] = useState(1)
+
+  const active = tabs.find((t) => t.id === activeId) ?? tabs[0]
+
+  const updateActiveCode = (code) => {
+    setTabs((ts) => ts.map((t) => (t.id === activeId ? { ...t, code } : t)))
+  }
+
+  const addTab = () => {
+    const id = idRef.current++
+    setTabs((ts) => [
+      ...ts,
+      { id, name: `다이어그램 ${ts.length + 1}`, code: NEW_TAB_CODE },
+    ])
+    setActiveId(id)
+  }
+
+  const closeTab = (id) => {
+    setTabs((ts) => {
+      if (ts.length <= 1) return ts
+      const idx = ts.findIndex((t) => t.id === id)
+      const next = ts.filter((t) => t.id !== id)
+      if (id === activeId) {
+        const fallback = next[Math.max(0, idx - 1)]
+        setActiveId(fallback.id)
+      }
+      return next
+    })
+  }
+
+  return (
+    <div className="flex h-full w-full flex-col">
+      <TabBar
+        tabs={tabs}
+        activeId={activeId}
+        onSelect={setActiveId}
+        onAdd={addTab}
+        onClose={closeTab}
+      />
+      <div className="min-h-0 flex-1">
+        {/* key=activeId: 탭 전환 시 해당 탭의 코드로 새로 마운트되어 캔버스 재구성 */}
+        <ReactFlowProvider key={activeId}>
+          <EditorInner
+            key={activeId}
+            initialCode={active.code}
+            onCodeChange={updateActiveCode}
+          />
+        </ReactFlowProvider>
+      </div>
+    </div>
   )
 }
