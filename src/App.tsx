@@ -121,12 +121,52 @@ export default function App() {
     [setNodes, syncCanvasToCode],
   )
 
+  // 캔버스에서 노드/엣지 삭제(Delete/Backspace) → 코드 갱신
+  const onDelete = useCallback(
+    ({ nodes: delNodes, edges: delEdges }: { nodes: AppNode[]; edges: AppEdge[] }) => {
+      const delNodeIds = new Set(delNodes.map((n) => n.id))
+      const delEdgeIds = new Set(delEdges.map((e) => e.id))
+      const remNodes = nodesRef.current.filter((n) => !delNodeIds.has(n.id))
+      const remEdges = edgesRef.current.filter((e) => !delEdgeIds.has(e.id))
+      syncCanvasToCode(remNodes, remEdges)
+    },
+    [syncCanvasToCode],
+  )
+
+  // 새 노드 추가 → 코드 갱신 (사용하지 않는 ID 자동 부여)
+  const onAddNode = useCallback(() => {
+    const ids = new Set(nodesRef.current.map((n) => n.id))
+    let i = 1
+    let id = `N${i}`
+    while (ids.has(id)) {
+      i += 1
+      id = `N${i}`
+    }
+    const offset = (nodesRef.current.length % 8) * 28
+    const newNode: AppNode = {
+      id,
+      type: 'editable',
+      position: { x: 60 + offset, y: 60 + offset },
+      data: { label: '새 노드' },
+    }
+    const nextNodes = [...nodesRef.current, newNode]
+    setNodes(nextNodes)
+    syncCanvasToCode(nextNodes, edgesRef.current)
+  }, [setNodes, syncCanvasToCode])
+
   return (
     <div className="flex h-full w-full">
       <div className="w-2/5 min-w-[280px] max-w-[640px] border-r border-slate-700">
         <MermaidEditor code={code} onChange={onCodeChange} error={error} />
       </div>
-      <div className="flex-1">
+      <div className="relative flex-1">
+        <button
+          type="button"
+          onClick={onAddNode}
+          className="absolute left-3 top-3 z-10 rounded-md bg-slate-800 px-3 py-1.5 text-sm font-medium text-white shadow hover:bg-slate-700"
+        >
+          + 노드 추가
+        </button>
         <LabelChangeContext.Provider value={handleLabelChange}>
           <FlowCanvas
             nodes={nodes}
@@ -134,6 +174,7 @@ export default function App() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onDelete={onDelete}
             nodeTypes={nodeTypes}
           />
         </LabelChangeContext.Provider>

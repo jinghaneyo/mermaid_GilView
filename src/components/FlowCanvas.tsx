@@ -7,6 +7,7 @@ import {
   type OnNodesChange,
   type OnEdgesChange,
   type OnConnect,
+  type OnDelete,
   type NodeTypes,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -18,6 +19,7 @@ interface Props {
   onNodesChange: OnNodesChange<AppNode>
   onEdgesChange: OnEdgesChange<AppEdge>
   onConnect: OnConnect
+  onDelete: OnDelete<AppNode, AppEdge>
   nodeTypes: NodeTypes
 }
 
@@ -27,6 +29,7 @@ export default function FlowCanvas({
   onNodesChange,
   onEdgesChange,
   onConnect,
+  onDelete,
   nodeTypes,
 }: Props) {
   return (
@@ -38,6 +41,8 @@ export default function FlowCanvas({
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          onDelete={onDelete}
+          deleteKeyCode={['Backspace', 'Delete']}
           nodeTypes={nodeTypes}
           fitView
           fitViewOptions={{ padding: 0.2 }}
