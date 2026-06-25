@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -9,136 +9,20 @@ import {
   useEdgesState,
   addEdge,
 } from '@xyflow/react'
-import dagre from '@dagrejs/dagre'
 import '@xyflow/react/dist/style.css'
+// Code -> Canvas 는 "실제 mermaid 공식 파서"를 사용한다.
+// convertMermaid = parseMermaid(mermaid 파서) + layout(dagre 계층 배치)
+// → subgraph / 노드 모양({},()) / 점선·굵은 화살표 등 복잡한 문법도 mermaid와 동일하게 해석됨.
+import { convertMermaid } from './lib/convertMermaid'
 
 /* ------------------------------------------------------------------ *
- * 1) convertMermaidToCanvas: Mermaid 텍스트 -> { nodes, edges }
- *    - mermaid 라이브러리 없이 정규식/split 로 기본 플로우차트 파싱
- *    - 노드는 dagre 계층 레이아웃으로 배치 (방향 TD/LR 반영, 부모->자식 흐름)
+ * convertCanvasToMermaid: { nodes, edges } -> Mermaid 텍스트
+ *   - 첫 줄은 항상 graph TD
+ *   - 노드: ID[라벨] (라벨 없으면 ID)
+ *   - 엣지: A --> B (라벨 있으면 A -->|라벨| B)
+ *   ※ 캔버스에서 표현 가능한 기본 flowchart 형태로만 출력한다
+ *     (subgraph/도형 등은 캔버스에 구조가 없으므로 역출력에 포함되지 않음)
  * ------------------------------------------------------------------ */
-
-const HEADER_RE = /^(graph|flowchart)\b/i
-const DIRECTION_RE = /^(?:graph|flowchart)\s+(TB|TD|BT|LR|RL)\b/i
-
-// dagre 자동 배치용 노드 크기
-const NODE_WIDTH = 170
-const NODE_HEIGHT = 44
-
-// 'TD'와 'TB'는 모두 위->아래
-function normalizeDirection(raw) {
-  const d = (raw || '').toUpperCase()
-  if (d === 'LR') return 'LR'
-  if (d === 'RL') return 'RL'
-  if (d === 'BT') return 'BT'
-  return 'TB'
-}
-
-// dagre로 계층형(트리) 배치: rankdir에 따라 부모->자식이 흐르도록 좌표 부여
-function layoutWithDagre(order, labels, edges, direction) {
-  const g = new dagre.graphlib.Graph({ multigraph: true })
-  g.setGraph({ rankdir: direction, nodesep: 60, ranksep: 80 })
-  g.setDefaultEdgeLabel(() => ({}))
-  for (const id of order) {
-    g.setNode(id, { width: NODE_WIDTH, height: NODE_HEIGHT })
-  }
-  for (const e of edges) {
-    g.setEdge(e.source, e.target, {}, e.id)
-  }
-  dagre.layout(g)
-  return order.map((id) => {
-    const p = g.node(id)
-    return {
-      id,
-      data: { label: labels.get(id) ?? id },
-      // dagre는 중심 좌표 -> React Flow 좌상단으로 변환
-      position: { x: p.x - NODE_WIDTH / 2, y: p.y - NODE_HEIGHT / 2 },
-    }
-  })
-}
-
-// "A[라벨]" / "B{라벨}" / "C(라벨)" / "A" 토큰에서 { id, label } 추출
-function parseNodeToken(token) {
-  const t = token.trim()
-  if (t === '') return null
-  const m = t.match(
-    /^([A-Za-z0-9_]+)\s*(?:\[\[([^\]]*)\]\]|\[([^\]]*)\]|\(\(([^)]*)\)\)|\(([^)]*)\)|\{([^}]*)\})?/,
-  )
-  if (!m) return null
-  const id = m[1]
-  const raw = m[2] ?? m[3] ?? m[4] ?? m[5] ?? m[6]
-  const label = raw !== undefined && raw.trim() !== '' ? raw.trim() : id
-  return { id, label }
-}
-
-export function convertMermaidToCanvas(mermaidText) {
-  const order = [] // 노드 발견 순서
-  const labels = new Map() // id -> label
-  const edges = []
-  let direction = 'TB' // graph TD/LR 등에서 결정
-
-  const addNode = (node) => {
-    if (!labels.has(node.id)) {
-      labels.set(node.id, node.label)
-      order.push(node.id)
-    } else if (labels.get(node.id) === node.id && node.label !== node.id) {
-      labels.set(node.id, node.label) // 기본 라벨(=id)이었으면 진짜 라벨로 갱신
-    }
-  }
-
-  const lines = (mermaidText ?? '').split('\n')
-  for (const rawLine of lines) {
-    const line = rawLine.trim()
-    if (line === '' || line.startsWith('%%')) continue
-    if (HEADER_RE.test(line)) {
-      const dm = line.match(DIRECTION_RE)
-      if (dm) direction = normalizeDirection(dm[1])
-      continue
-    }
-
-    if (line.includes('-->')) {
-      // 화살표로 분리해 좌->우 순서로 노드/엣지 생성. 라벨은 화살표 뒤 토큰의 |...|.
-      const parts = line.split('-->')
-      let prevId = null
-      for (const part of parts) {
-        let seg = part.trim()
-        let edgeLabel
-        const lm = seg.match(/^\|([^|]*)\|\s*/)
-        if (lm) {
-          edgeLabel = lm[1].trim()
-          seg = seg.slice(lm[0].length).trim()
-        }
-        const node = parseNodeToken(seg)
-        if (!node) continue
-        addNode(node)
-        if (prevId !== null) {
-          edges.push({
-            id: `${prevId}-${node.id}-${edges.length}`,
-            source: prevId,
-            target: node.id,
-            ...(edgeLabel ? { label: edgeLabel } : {}),
-          })
-        }
-        prevId = node.id
-      }
-    } else {
-      const node = parseNodeToken(line)
-      if (node) addNode(node)
-    }
-  }
-
-  const nodes = layoutWithDagre(order, labels, edges, direction)
-
-  return { nodes, edges }
-}
-
-/* ------------------------------------------------------------------ *
- * 2) convertCanvasToMermaid: { nodes, edges } -> Mermaid 텍스트
- *    - 첫 줄은 항상 graph TD
- *    - 노드: ID[라벨] (라벨 없으면 ID)
- *    - 엣지: A --> B (라벨 있으면 A -->|라벨| B)
- * ------------------------------------------------------------------ */
-
 export function convertCanvasToMermaid(nodes, edges) {
   const lines = ['graph TD']
 
@@ -161,22 +45,23 @@ export function convertCanvasToMermaid(nodes, edges) {
 }
 
 /* ------------------------------------------------------------------ *
- * 3) MermaidVisualEditor: 좌(코드) / 우(캔버스) 양방향 에디터
+ * MermaidVisualEditor: 좌(코드) / 우(캔버스) 양방향 에디터
  *
- *   - Code  -> Canvas : Textarea onChange 에서 파싱하여 노드/선 실시간 갱신
- *   - Canvas -> Code  : onConnect(선 연결) / onNodeDragStop(드래그 종료) 시
+ *   - Code  -> Canvas : Textarea onChange -> mermaid 파서로 파싱 + dagre 배치
+ *   - Canvas -> Code  : onConnect(선 연결) / onNodeDragStop(드래그 종료) ->
  *                       현재 구조를 Mermaid 코드로 변환해 Textarea 갱신
  *
  *   두 방향이 서로 다른 사용자 이벤트로만 발생하므로 무한 루프가 없다.
+ *   (code->canvas 는 onChange/마운트에서만, canvas->code 는 connect/dragStop 에서만)
  * ------------------------------------------------------------------ */
 
 const INITIAL_CODE = 'graph TD\nA[시작] --> B[종료]'
-const INITIAL = convertMermaidToCanvas(INITIAL_CODE)
 
 function EditorInner() {
   const [code, setCode] = useState(INITIAL_CODE)
-  const [nodes, setNodes, onNodesChange] = useNodesState(INITIAL.nodes)
-  const [edges, setEdges, onEdgesChange] = useEdgesState(INITIAL.edges)
+  const [error, setError] = useState(null)
+  const [nodes, setNodes, onNodesChange] = useNodesState([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState([])
 
   // 핸들러에서 최신 상태를 읽기 위한 ref 미러
   const nodesRef = useRef(nodes)
@@ -184,13 +69,37 @@ function EditorInner() {
   nodesRef.current = nodes
   edgesRef.current = edges
 
-  // Code -> Canvas : 텍스트 입력을 감지해 노드/선을 다시 만든다
+  // 비동기 파싱 경합 방지(최신 요청만 반영) + 디바운스
+  const seqRef = useRef(0)
+  const debounceRef = useRef(null)
+
+  // Code -> Canvas : mermaid 파서로 파싱 + dagre 배치
+  const runParse = (text) => {
+    const seq = ++seqRef.current
+    convertMermaid(text).then((res) => {
+      if (seq !== seqRef.current) return // 더 최신 입력이 있으면 폐기
+      if (res.error) {
+        setError(res.error) // 파싱 실패: 직전 그래프 유지, 에러만 표시
+        return
+      }
+      setError(null)
+      setNodes(res.nodes)
+      setEdges(res.edges)
+    })
+  }
+
+  // 초기 코드 1회 파싱
+  useEffect(() => {
+    runParse(INITIAL_CODE)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 텍스트 입력 감지 -> 디바운스 후 파싱
   const handleCodeChange = (e) => {
     const text = e.target.value
     setCode(text)
-    const { nodes: nextNodes, edges: nextEdges } = convertMermaidToCanvas(text)
-    setNodes(nextNodes)
-    setEdges(nextEdges)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => runParse(text), 250)
   }
 
   // Canvas -> Code : 현재 노드/선을 Mermaid 코드로 변환해 Textarea 갱신
@@ -208,7 +117,6 @@ function EditorInner() {
   }
 
   // 노드 드래그 종료 -> 코드 갱신
-  // (위치 자체는 Mermaid 문법에 없으므로 구조 변화가 없으면 코드 내용은 동일)
   const onNodeDragStop = () => {
     syncCanvasToCode(nodesRef.current, edgesRef.current)
   }
@@ -219,7 +127,7 @@ function EditorInner() {
       <div className="flex w-2/5 min-w-[280px] max-w-[640px] flex-col border-r border-slate-700 bg-slate-900 text-slate-100">
         <div className="flex items-center justify-between border-b border-slate-700 px-4 py-2.5">
           <h1 className="text-sm font-semibold tracking-tight">Mermaid 코드</h1>
-          <span className="text-xs text-slate-400">flowchart (graph TD)</span>
+          <span className="text-xs text-slate-400">flowchart (mermaid 파서)</span>
         </div>
         <textarea
           value={code}
@@ -228,6 +136,11 @@ function EditorInner() {
           className="flex-1 resize-none bg-slate-900 p-4 font-mono text-sm leading-relaxed text-slate-100 outline-none"
           placeholder={'graph TD\n  A[시작] --> B[종료]'}
         />
+        {error && (
+          <div className="border-t border-red-800 bg-red-950/80 px-4 py-2 font-mono text-xs text-red-300">
+            ⚠ {error}
+          </div>
+        )}
       </div>
 
       {/* 오른쪽: React Flow 비주얼 캔버스 */}
