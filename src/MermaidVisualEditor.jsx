@@ -174,19 +174,23 @@ function ShapeNode({ data }) {
 
 const nodeTypes = { group: GroupNode, shape: ShapeNode }
 
-function EditorInner({ initialCode, onCodeChange }) {
+function EditorInner({
+  initialCode,
+  onCodeChange,
+  theme,
+  setTheme,
+  showGrid,
+  setShowGrid,
+  leftWidth,
+  setLeftWidth,
+}) {
   const [code, setCode] = useState(initialCode ?? INITIAL_CODE)
   const [error, setError] = useState(null)
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
 
-  // 좌/우 패널 너비(px) — 스플리터 드래그로 조절
-  const [leftWidth, setLeftWidth] = useState(440)
+  // 스플리터 드래그 시 컨테이너 기준 좌표 계산용
   const containerRef = useRef(null)
-
-  // 캔버스 테마 / 격자 표시
-  const [theme, setTheme] = useState('light') // 'light' | 'dark'
-  const [showGrid, setShowGrid] = useState(true)
 
   // 핸들러에서 최신 상태를 읽기 위한 ref 미러
   const nodesRef = useRef(nodes)
@@ -412,24 +416,59 @@ function EditorInner({ initialCode, onCodeChange }) {
   )
 }
 
-// 상단 탭 바: 여러 Mermaid 다이어그램을 탭으로 전환
-function TabBar({ tabs, activeId, onSelect, onAdd, onClose }) {
+// 상단 탭 바: 여러 Mermaid 다이어그램을 탭으로 전환 (더블클릭으로 이름 변경)
+function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename }) {
+  const [editingId, setEditingId] = useState(null)
+  const [draft, setDraft] = useState('')
+  const inputRef = useRef(null)
+
+  useEffect(() => {
+    if (editingId !== null) inputRef.current?.select()
+  }, [editingId])
+
+  const startEdit = (t) => {
+    setEditingId(t.id)
+    setDraft(t.name)
+  }
+  const commit = () => {
+    if (editingId !== null) onRename(editingId, draft.trim() || '제목 없음')
+    setEditingId(null)
+  }
+
   return (
     <div className="flex items-stretch gap-1 border-b border-slate-700 bg-slate-800 px-2 pt-1.5">
       {tabs.map((t) => {
         const active = t.id === activeId
+        const editing = editingId === t.id
         return (
           <div
             key={t.id}
             onClick={() => onSelect(t.id)}
+            onDoubleClick={() => startEdit(t)}
+            title="더블클릭하여 이름 변경"
             className={`group flex cursor-pointer items-center gap-2 rounded-t-md px-3 py-1.5 text-sm ${
               active
                 ? 'bg-slate-900 text-slate-100'
                 : 'bg-slate-700/50 text-slate-300 hover:bg-slate-700'
             }`}
           >
-            <span className="max-w-[160px] truncate">{t.name}</span>
-            {tabs.length > 1 && (
+            {editing ? (
+              <input
+                ref={inputRef}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                onBlur={commit}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commit()
+                  else if (e.key === 'Escape') setEditingId(null)
+                }}
+                className="w-28 rounded bg-slate-700 px-1 text-sm text-slate-100 outline-none ring-1 ring-blue-500"
+              />
+            ) : (
+              <span className="max-w-[160px] truncate">{t.name}</span>
+            )}
+            {tabs.length > 1 && !editing && (
               <button
                 type="button"
                 onClick={(e) => {
@@ -459,17 +498,77 @@ function TabBar({ tabs, activeId, onSelect, onAdd, onClose }) {
 
 const NEW_TAB_CODE = 'graph TD\n  A[시작] --> B[종료]'
 
+// ---- 워크스페이스 영속성(localStorage) ----
+const STORAGE_KEY = 'mermaid-gilview-workspace'
+const DEFAULT_WORKSPACE = {
+  tabs: [{ id: 1, name: '다이어그램 1', code: INITIAL_CODE }],
+  activeId: 1,
+  settings: { theme: 'light', showGrid: true, leftWidth: 440 },
+}
+
+function loadWorkspace() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return DEFAULT_WORKSPACE
+    const data = JSON.parse(raw)
+    if (!data || !Array.isArray(data.tabs) || data.tabs.length === 0) {
+      return DEFAULT_WORKSPACE
+    }
+    return {
+      tabs: data.tabs,
+      activeId: data.activeId ?? data.tabs[0].id,
+      settings: { ...DEFAULT_WORKSPACE.settings, ...(data.settings ?? {}) },
+    }
+  } catch {
+    return DEFAULT_WORKSPACE
+  }
+}
+
 export default function MermaidVisualEditor() {
-  const idRef = useRef(2)
-  const [tabs, setTabs] = useState([
-    { id: 1, name: '다이어그램 1', code: INITIAL_CODE },
-  ])
-  const [activeId, setActiveId] = useState(1)
+  // 최초 1회만 localStorage 로드
+  const initialRef = useRef(null)
+  if (initialRef.current === null) initialRef.current = loadWorkspace()
+  const init = initialRef.current
+
+  const idRef = useRef(Math.max(0, ...init.tabs.map((t) => t.id)) + 1)
+  const [tabs, setTabs] = useState(init.tabs)
+  const [activeId, setActiveId] = useState(init.activeId)
+
+  // 설정(테마/격자/패널폭)은 앱 레벨 — 탭 전환에도 유지 + 저장
+  const [theme, setTheme] = useState(init.settings.theme)
+  const [showGrid, setShowGrid] = useState(init.settings.showGrid)
+  const [leftWidth, setLeftWidth] = useState(init.settings.leftWidth)
+
+  // 변경 시 디바운스 자동 저장
+  const saveTimer = useRef(null)
+  useEffect(() => {
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(() => {
+      try {
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({
+            version: 1,
+            tabs,
+            activeId,
+            settings: { theme, showGrid, leftWidth },
+          }),
+        )
+      } catch {
+        /* 용량 초과 등은 무시 */
+      }
+    }, 400)
+    return () => saveTimer.current && clearTimeout(saveTimer.current)
+  }, [tabs, activeId, theme, showGrid, leftWidth])
 
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0]
 
   const updateActiveCode = (code) => {
     setTabs((ts) => ts.map((t) => (t.id === activeId ? { ...t, code } : t)))
+  }
+
+  const renameTab = (id, name) => {
+    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, name } : t)))
   }
 
   const addTab = () => {
@@ -482,6 +581,13 @@ export default function MermaidVisualEditor() {
   }
 
   const closeTab = (id) => {
+    const tab = tabs.find((t) => t.id === id)
+    // 내용이 있는 탭은 닫기 전에 확인
+    if (tab && tab.code.trim() && tab.code.trim() !== NEW_TAB_CODE.trim()) {
+      if (!window.confirm(`'${tab.name}' 탭을 닫을까요? 저장되지 않은 내용은 사라집니다.`)) {
+        return
+      }
+    }
     setTabs((ts) => {
       if (ts.length <= 1) return ts
       const idx = ts.findIndex((t) => t.id === id)
@@ -502,6 +608,7 @@ export default function MermaidVisualEditor() {
         onSelect={setActiveId}
         onAdd={addTab}
         onClose={closeTab}
+        onRename={renameTab}
       />
       <div className="min-h-0 flex-1">
         {/* key=activeId: 탭 전환 시 해당 탭의 코드로 새로 마운트되어 캔버스 재구성 */}
@@ -510,6 +617,12 @@ export default function MermaidVisualEditor() {
             key={activeId}
             initialCode={active.code}
             onCodeChange={updateActiveCode}
+            theme={theme}
+            setTheme={setTheme}
+            showGrid={showGrid}
+            setShowGrid={setShowGrid}
+            leftWidth={leftWidth}
+            setLeftWidth={setLeftWidth}
           />
         </ReactFlowProvider>
       </div>
