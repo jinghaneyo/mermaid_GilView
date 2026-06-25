@@ -72,27 +72,33 @@ function GroupNode({ data }) {
 }
 
 // 노드 모양별 본체 렌더 (마름모/원통/원/스타디움/사각형)
+// 색은 테마 대응: 라이트=흰 채움/짙은 글자, 다크=짙은 채움(slate-700)/밝은 글자.
+// SVG 도형의 채움은 currentColor 로 두고 text-* 클래스로 테마별 색을 준다.
 function ShapeBody({ shape, label }) {
-  const stroke = '#94a3b8' // slate-400
-  const fill = 'white'
+  const stroke = '#94a3b8' // slate-400 (양쪽 테마에서 모두 보임)
+  // SVG 채움색: 라이트=흰색, 다크=slate-700
+  const svgFill = 'text-white dark:text-slate-700'
+  const labelText = 'text-slate-800 dark:text-slate-100'
 
   if (shape === 'diamond') {
     return (
       <div className="relative h-full w-full">
         <svg
-          className="absolute inset-0 h-full w-full"
+          className={`absolute inset-0 h-full w-full ${svgFill}`}
           viewBox="0 0 100 100"
           preserveAspectRatio="none"
         >
           <polygon
             points="50,3 97,50 50,97 3,50"
-            fill={fill}
+            fill="currentColor"
             stroke={stroke}
             strokeWidth="1.5"
             vectorEffect="non-scaling-stroke"
           />
         </svg>
-        <div className="absolute inset-0 flex items-center justify-center px-3 text-center text-xs text-slate-800">
+        <div
+          className={`absolute inset-0 flex items-center justify-center px-3 text-center text-xs ${labelText}`}
+        >
           {label}
         </div>
       </div>
@@ -103,13 +109,13 @@ function ShapeBody({ shape, label }) {
     return (
       <div className="relative h-full w-full">
         <svg
-          className="absolute inset-0 h-full w-full"
+          className={`absolute inset-0 h-full w-full ${svgFill}`}
           viewBox="0 0 100 100"
           preserveAspectRatio="none"
         >
           <path
             d="M2,10 V90 A48,9 0 0 0 98,90 V10"
-            fill={fill}
+            fill="currentColor"
             stroke={stroke}
             strokeWidth="1.5"
             vectorEffect="non-scaling-stroke"
@@ -119,13 +125,15 @@ function ShapeBody({ shape, label }) {
             cy="10"
             rx="48"
             ry="9"
-            fill={fill}
+            fill="currentColor"
             stroke={stroke}
             strokeWidth="1.5"
             vectorEffect="non-scaling-stroke"
           />
         </svg>
-        <div className="absolute inset-0 flex items-center justify-center px-2 pt-3 text-center text-sm text-slate-800">
+        <div
+          className={`absolute inset-0 flex items-center justify-center px-2 pt-3 text-center text-sm ${labelText}`}
+        >
           {label}
         </div>
       </div>
@@ -133,11 +141,11 @@ function ShapeBody({ shape, label }) {
   }
 
   const base =
-    'flex h-full w-full items-center justify-center border border-slate-400 bg-white px-3 text-center text-sm text-slate-800 shadow-sm'
+    'flex h-full w-full items-center justify-center border border-slate-400 bg-white px-3 text-center text-sm text-slate-800 shadow-sm dark:border-slate-400 dark:bg-slate-700 dark:text-slate-100'
   if (shape === 'circle' || shape === 'doublecircle') {
     return (
       <div
-        className={`${base} rounded-full ${shape === 'doublecircle' ? 'ring-2 ring-slate-400 ring-offset-1' : ''}`}
+        className={`${base} rounded-full ${shape === 'doublecircle' ? 'ring-2 ring-slate-400 ring-offset-1 dark:ring-offset-slate-900' : ''}`}
       >
         {label}
       </div>

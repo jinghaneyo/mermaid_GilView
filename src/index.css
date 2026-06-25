@@ -6,3 +6,17 @@ html, body, #root {
   height: 100%;
   margin: 0;
 }
+
+/* 다크 테마에서 연결선이 너무 어두워 안 보이는 문제 보정 */
+.react-flow.dark .react-flow__edge-path {
+  stroke: #94a3b8; /* slate-400 */
+  stroke-width: 1.5;
+}
+.react-flow.dark .react-flow__edge.selected .react-flow__edge-path,
+.react-flow.dark .react-flow__edge:hover .react-flow__edge-path {
+  stroke: #60a5fa; /* blue-400 */
+}
+/* 연결 중 미리보기 선 */
+.react-flow.dark .react-flow__connectionline {
+  stroke: #94a3b8;
+}
