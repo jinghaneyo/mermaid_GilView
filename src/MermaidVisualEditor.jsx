@@ -9,18 +9,53 @@ import {
   useEdgesState,
   addEdge,
 } from '@xyflow/react'
+import dagre from '@dagrejs/dagre'
 import '@xyflow/react/dist/style.css'
 
 /* ------------------------------------------------------------------ *
  * 1) convertMermaidToCanvas: Mermaid 텍스트 -> { nodes, edges }
  *    - mermaid 라이브러리 없이 정규식/split 로 기본 플로우차트 파싱
- *    - 노드는 3열 격자로 좌표를 자동 부여해 겹치지 않게 배치
+ *    - 노드는 dagre 계층 레이아웃으로 배치 (방향 TD/LR 반영, 부모->자식 흐름)
  * ------------------------------------------------------------------ */
 
-const GRID_COLS = 3
-const X_GAP = 220
-const Y_GAP = 120
 const HEADER_RE = /^(graph|flowchart)\b/i
+const DIRECTION_RE = /^(?:graph|flowchart)\s+(TB|TD|BT|LR|RL)\b/i
+
+// dagre 자동 배치용 노드 크기
+const NODE_WIDTH = 170
+const NODE_HEIGHT = 44
+
+// 'TD'와 'TB'는 모두 위->아래
+function normalizeDirection(raw) {
+  const d = (raw || '').toUpperCase()
+  if (d === 'LR') return 'LR'
+  if (d === 'RL') return 'RL'
+  if (d === 'BT') return 'BT'
+  return 'TB'
+}
+
+// dagre로 계층형(트리) 배치: rankdir에 따라 부모->자식이 흐르도록 좌표 부여
+function layoutWithDagre(order, labels, edges, direction) {
+  const g = new dagre.graphlib.Graph({ multigraph: true })
+  g.setGraph({ rankdir: direction, nodesep: 60, ranksep: 80 })
+  g.setDefaultEdgeLabel(() => ({}))
+  for (const id of order) {
+    g.setNode(id, { width: NODE_WIDTH, height: NODE_HEIGHT })
+  }
+  for (const e of edges) {
+    g.setEdge(e.source, e.target, {}, e.id)
+  }
+  dagre.layout(g)
+  return order.map((id) => {
+    const p = g.node(id)
+    return {
+      id,
+      data: { label: labels.get(id) ?? id },
+      // dagre는 중심 좌표 -> React Flow 좌상단으로 변환
+      position: { x: p.x - NODE_WIDTH / 2, y: p.y - NODE_HEIGHT / 2 },
+    }
+  })
+}
 
 // "A[라벨]" / "B{라벨}" / "C(라벨)" / "A" 토큰에서 { id, label } 추출
 function parseNodeToken(token) {
@@ -40,6 +75,7 @@ export function convertMermaidToCanvas(mermaidText) {
   const order = [] // 노드 발견 순서
   const labels = new Map() // id -> label
   const edges = []
+  let direction = 'TB' // graph TD/LR 등에서 결정
 
   const addNode = (node) => {
     if (!labels.has(node.id)) {
@@ -54,7 +90,11 @@ export function convertMermaidToCanvas(mermaidText) {
   for (const rawLine of lines) {
     const line = rawLine.trim()
     if (line === '' || line.startsWith('%%')) continue
-    if (HEADER_RE.test(line)) continue
+    if (HEADER_RE.test(line)) {
+      const dm = line.match(DIRECTION_RE)
+      if (dm) direction = normalizeDirection(dm[1])
+      continue
+    }
 
     if (line.includes('-->')) {
       // 화살표로 분리해 좌->우 순서로 노드/엣지 생성. 라벨은 화살표 뒤 토큰의 |...|.
@@ -87,14 +127,7 @@ export function convertMermaidToCanvas(mermaidText) {
     }
   }
 
-  const nodes = order.map((id, i) => ({
-    id,
-    data: { label: labels.get(id) ?? id },
-    position: {
-      x: (i % GRID_COLS) * X_GAP,
-      y: Math.floor(i / GRID_COLS) * Y_GAP,
-    },
-  }))
+  const nodes = layoutWithDagre(order, labels, edges, direction)
 
   return { nodes, edges }
 }
