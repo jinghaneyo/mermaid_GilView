@@ -3,11 +3,17 @@
 왼쪽에서 **Mermaid 코드**를 편집하면 오른쪽 **캔버스**에 실시간으로 그려지고,
 캔버스에서 노드를 연결·이동·편집하면 다시 코드로 반영되는 **양방향 에디터**입니다.
 
-## 🔗 데모
+## 🔗 사용 방법 (배포)
 
-**https://jinghaneyo.github.io/mermaid_GilView/**
+서버 없이 동작하는 정적 앱입니다. 작업 내용은 브라우저 localStorage에 자동 저장됩니다(서버 전송 없음).
 
-설치 없이 브라우저에서 바로 사용할 수 있습니다. 작업 내용은 브라우저에 자동 저장됩니다(서버 전송 없음).
+- **가장 간편 — 단일 HTML 파일**: `npm run build:single` → `dist-single/index.html` 한 파일.
+  이 파일을 받아 **더블클릭**하면 브라우저에서 바로 열립니다(설치·서버 불필요).
+- **정적 호스팅 — dist 폴더**: `npm run build` → `dist/`를 정적 호스트에 업로드.
+  로컬 확인은 `npm run preview`.
+- **GitHub Pages**: 저장소를 **공개(public)**로 두면 포함된 GitHub Actions 워크플로우가
+  push 시 자동 빌드·배포합니다 → `https://jinghaneyo.github.io/mermaid_GilView/`
+  (무료 플랜은 비공개 저장소 Pages를 지원하지 않습니다.)
 
 ## ✨ 기능
 
