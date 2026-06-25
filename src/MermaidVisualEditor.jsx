@@ -10,9 +10,20 @@ import {
   Position,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   addEdge,
+  getViewportForBounds,
 } from '@xyflow/react'
+import { toPng, toSvg } from 'html-to-image'
 import '@xyflow/react/dist/style.css'
+
+// 데이터 URL/Blob URL을 파일로 다운로드
+function triggerDownload(url, filename) {
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+}
 // Code -> Canvas 는 "실제 mermaid 공식 파서"를 사용한다.
 // convertMermaid = parseMermaid(mermaid 파서) + layout(dagre 계층 배치)
 // → subgraph / 노드 모양({},()) / 점선·굵은 화살표 등 복잡한 문법도 mermaid와 동일하게 해석됨.
@@ -191,6 +202,7 @@ function EditorInner({
 
   // 스플리터 드래그 시 컨테이너 기준 좌표 계산용
   const containerRef = useRef(null)
+  const reactFlow = useReactFlow()
 
   // 핸들러에서 최신 상태를 읽기 위한 ref 미러
   const nodesRef = useRef(nodes)
@@ -329,6 +341,44 @@ function EditorInner({
     window.addEventListener('mouseup', onUp)
   }
 
+  // 현재 캔버스를 PNG/SVG 이미지로 내보내기 (노드 영역에 맞춰 캡처)
+  const exportImage = async (type) => {
+    const viewport = document.querySelector('.react-flow__viewport')
+    const all = nodesRef.current
+    if (!viewport || all.length === 0) return
+    const bounds = reactFlow.getNodesBounds(all)
+    const pad = 40
+    const imgW = Math.max(10, Math.round(bounds.width + pad * 2))
+    const imgH = Math.max(10, Math.round(bounds.height + pad * 2))
+    const vp = getViewportForBounds(bounds, imgW, imgH, 0.5, 2, pad)
+    const opts = {
+      backgroundColor: theme === 'dark' ? '#0f172a' : '#ffffff',
+      width: imgW,
+      height: imgH,
+      style: {
+        width: `${imgW}px`,
+        height: `${imgH}px`,
+        transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})`,
+      },
+    }
+    const dataUrl = await (type === 'svg' ? toSvg : toPng)(viewport, opts)
+    triggerDownload(dataUrl, `diagram.${type}`)
+  }
+
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+    } catch {
+      /* 클립보드 권한 없음 등 무시 */
+    }
+  }
+
+  const exportMmd = () => {
+    const url = URL.createObjectURL(new Blob([code], { type: 'text/plain' }))
+    triggerDownload(url, 'diagram.mmd')
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
   const btnClass =
     'rounded-md border border-slate-300 bg-white/90 px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm hover:bg-white'
 
@@ -370,8 +420,20 @@ function EditorInner({
       <div
         className={`relative flex-1 ${theme === 'dark' ? 'bg-slate-900' : 'bg-slate-50'}`}
       >
-        {/* 툴바: 테마 / 격자 토글 */}
-        <div className="absolute right-3 top-3 z-10 flex gap-2">
+        {/* 툴바: 내보내기 / 테마 / 격자 토글 */}
+        <div className="absolute right-3 top-3 z-10 flex flex-wrap justify-end gap-2">
+          <button type="button" onClick={() => exportImage('png')} className={btnClass}>
+            🖼 PNG
+          </button>
+          <button type="button" onClick={() => exportImage('svg')} className={btnClass}>
+            🖼 SVG
+          </button>
+          <button type="button" onClick={exportMmd} className={btnClass}>
+            💾 .mmd
+          </button>
+          <button type="button" onClick={copyCode} className={btnClass}>
+            📋 복사
+          </button>
           <button
             type="button"
             onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
@@ -417,7 +479,7 @@ function EditorInner({
 }
 
 // 상단 탭 바: 여러 Mermaid 다이어그램을 탭으로 전환 (더블클릭으로 이름 변경)
-function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename }) {
+function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename, right }) {
   const [editingId, setEditingId] = useState(null)
   const [draft, setDraft] = useState('')
   const inputRef = useRef(null)
@@ -492,6 +554,9 @@ function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename }) {
       >
         +
       </button>
+      {right && (
+        <div className="ml-auto flex items-center gap-1 self-center pb-1">{right}</div>
+      )}
     </div>
   )
 }
@@ -571,6 +636,61 @@ export default function MermaidVisualEditor() {
     setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, name } : t)))
   }
 
+  // .mmd/.txt 파일을 새 탭으로 가져오기
+  const mmdInputRef = useRef(null)
+  const jsonInputRef = useRef(null)
+
+  const importMmd = (file) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const id = idRef.current++
+      const name = file.name.replace(/\.(mmd|md|txt)$/i, '') || `다이어그램 ${tabs.length + 1}`
+      setTabs((ts) => [...ts, { id, name, code: String(reader.result) }])
+      setActiveId(id)
+    }
+    reader.readAsText(file)
+  }
+
+  // 전체 워크스페이스(모든 탭 + 설정) JSON 백업/복원
+  const backupWorkspace = () => {
+    const data = {
+      version: 1,
+      tabs,
+      activeId,
+      settings: { theme, showGrid, leftWidth },
+    }
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
+    )
+    triggerDownload(url, 'mermaid-workspace.json')
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  const restoreWorkspace = (file) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result))
+        if (!Array.isArray(data.tabs) || data.tabs.length === 0) return
+        if (!window.confirm('현재 워크스페이스를 백업 파일로 교체할까요?')) return
+        setTabs(data.tabs)
+        setActiveId(data.activeId ?? data.tabs[0].id)
+        if (data.settings) {
+          setTheme(data.settings.theme ?? theme)
+          setShowGrid(data.settings.showGrid ?? showGrid)
+          setLeftWidth(data.settings.leftWidth ?? leftWidth)
+        }
+        idRef.current = Math.max(0, ...data.tabs.map((t) => t.id)) + 1
+      } catch {
+        window.alert('백업 파일을 읽을 수 없습니다.')
+      }
+    }
+    reader.readAsText(file)
+  }
+
+  const tabActionBtn =
+    'rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white'
+
   const addTab = () => {
     const id = idRef.current++
     setTabs((ts) => [
@@ -609,6 +729,56 @@ export default function MermaidVisualEditor() {
         onAdd={addTab}
         onClose={closeTab}
         onRename={renameTab}
+        right={
+          <>
+            <button
+              type="button"
+              className={tabActionBtn}
+              onClick={() => mmdInputRef.current?.click()}
+              title=".mmd/.txt 파일을 새 탭으로 가져오기"
+            >
+              📥 가져오기
+            </button>
+            <button
+              type="button"
+              className={tabActionBtn}
+              onClick={backupWorkspace}
+              title="모든 탭 + 설정을 JSON으로 백업"
+            >
+              ⬇ 백업
+            </button>
+            <button
+              type="button"
+              className={tabActionBtn}
+              onClick={() => jsonInputRef.current?.click()}
+              title="백업 JSON에서 복원"
+            >
+              ⬆ 복원
+            </button>
+            <input
+              ref={mmdInputRef}
+              type="file"
+              accept=".mmd,.md,.txt"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) importMmd(f)
+                e.target.value = ''
+              }}
+            />
+            <input
+              ref={jsonInputRef}
+              type="file"
+              accept=".json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) restoreWorkspace(f)
+                e.target.value = ''
+              }}
+            />
+          </>
+        }
       />
       <div className="min-h-0 flex-1">
         {/* key=activeId: 탭 전환 시 해당 탭의 코드로 새로 마운트되어 캔버스 재구성 */}
