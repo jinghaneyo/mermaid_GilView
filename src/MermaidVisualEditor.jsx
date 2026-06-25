@@ -105,18 +105,45 @@ function EditorInner() {
         return
       }
       setError(null)
-      // subgraph 그룹 박스를 멤버 노드 "뒤"에 깔고, 일반 노드는 그 위에 둔다
-      const groupNodes = (res.groups ?? []).map((g) => ({
+      const groups = res.groups ?? []
+
+      // 노드 -> 소속 그룹 매핑 (한 노드는 첫 그룹에만 소속)
+      const nodeToGroup = new Map()
+      for (const g of groups) {
+        for (const id of g.nodeIds) {
+          if (!nodeToGroup.has(id)) nodeToGroup.set(id, g)
+        }
+      }
+
+      // 그룹 박스 노드: 드래그 가능(자식 동반 이동), 멤버 노드 뒤(zIndex 0)
+      const groupNodes = groups.map((g) => ({
         id: `__group_${g.id}`,
         type: 'group',
         position: g.position,
         data: { label: g.label },
-        style: { width: g.width, height: g.height, pointerEvents: 'none' },
-        selectable: false,
-        draggable: false,
+        style: { width: g.width, height: g.height },
         zIndex: 0,
       }))
-      const flowNodes = res.nodes.map((n) => ({ ...n, zIndex: 1 }))
+
+      // 멤버 노드는 그룹의 자식(parentId)으로 두고 좌표를 그룹 기준 상대좌표로 변환
+      // -> 그룹을 드래그하면 자식도 함께 이동, extent:'parent'로 박스 안에 유지
+      const flowNodes = res.nodes.map((n) => {
+        const g = nodeToGroup.get(n.id)
+        if (g) {
+          return {
+            ...n,
+            parentId: `__group_${g.id}`,
+            extent: 'parent',
+            position: {
+              x: n.position.x - g.position.x,
+              y: n.position.y - g.position.y,
+            },
+            zIndex: 1,
+          }
+        }
+        return { ...n, zIndex: 1 }
+      })
+
       setNodes([...groupNodes, ...flowNodes])
       setEdges(res.edges)
     })
@@ -153,7 +180,11 @@ function EditorInner() {
   }
 
   // 노드 드래그 종료 -> 코드 갱신
+  // 단, subgraph(그룹)가 있으면 코드 역생성이 subgraph를 평탄화하므로 생략
+  // (노드 위치는 Mermaid 문법에 없어 드래그만으로 코드가 바뀔 이유도 없음)
   const onNodeDragStop = () => {
+    const hasGroups = nodesRef.current.some((n) => n.type === 'group')
+    if (hasGroups) return
     syncCanvasToCode(nodesRef.current, edgesRef.current)
   }
 
@@ -212,8 +243,10 @@ function EditorInner() {
       <div
         onMouseDown={onSplitterMouseDown}
         title="드래그하여 패널 크기 조절"
-        className="w-1.5 shrink-0 cursor-col-resize bg-slate-700 transition-colors hover:bg-blue-500"
-      />
+        className="group flex w-2.5 shrink-0 cursor-col-resize items-center justify-center bg-slate-600 transition-colors hover:bg-blue-500"
+      >
+        <div className="h-10 w-1 rounded-full bg-slate-300 group-hover:bg-white" />
+      </div>
 
       {/* 오른쪽: React Flow 비주얼 캔버스 */}
       <div

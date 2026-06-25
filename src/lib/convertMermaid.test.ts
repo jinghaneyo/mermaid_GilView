@@ -21,9 +21,10 @@ describe('convertMermaid', () => {
     )
     expect(res.error).toBeNull()
     expect(res.groups).toHaveLength(1)
-    expect(res.groups[0].label).toBe('Boot')
-    expect(res.groups[0].width).toBeGreaterThan(0)
-    expect(res.groups[0].height).toBeGreaterThan(0)
+    expect(res.groups![0].label).toBe('Boot')
+    expect(res.groups![0].width).toBeGreaterThan(0)
+    expect(res.groups![0].height).toBeGreaterThan(0)
+    expect(res.groups![0].nodeIds).toEqual(expect.arrayContaining(['A', 'B']))
   })
 
   it('잘못된 문법은 에러를 담고 노드/엣지는 비운다', async () => {

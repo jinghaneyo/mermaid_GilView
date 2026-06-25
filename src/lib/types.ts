@@ -40,6 +40,7 @@ export interface GroupBox {
   position: { x: number; y: number }
   width: number
   height: number
+  nodeIds: string[]
 }
 
 // React Flow 호환 출력

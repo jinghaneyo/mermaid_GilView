@@ -37,6 +37,7 @@ function computeGroups(
       position: { x: minX - GROUP_PAD, y: minY - GROUP_PAD - GROUP_TITLE_H },
       width: maxX - minX + GROUP_PAD * 2,
       height: maxY - minY + GROUP_PAD * 2 + GROUP_TITLE_H,
+      nodeIds: members.map((n) => n.id),
     })
   }
 
