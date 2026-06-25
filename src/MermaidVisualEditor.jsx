@@ -71,6 +71,17 @@ export function convertCanvasToMermaid(nodes, edges) {
 
 const INITIAL_CODE = 'graph TD\nA[시작] --> B[종료]'
 
+// 예제/템플릿
+const TEMPLATES = {
+  basic: 'graph TD\n  A[시작] --> B[처리]\n  B --> C[종료]',
+  decision:
+    'graph TD\n  A[시작] --> B{조건}\n  B -->|예| C[처리]\n  B -->|아니오| D[종료]\n  C --> D',
+  subgraph:
+    'graph TD\n  subgraph 입력\n    A[수집] --> B[검증]\n  end\n  subgraph 처리\n    C[변환] --> D[저장]\n  end\n  B --> C',
+  shapes:
+    'graph TD\n  A[사각형] --> B{마름모}\n  B --> C[(원통)]\n  B --> D([스타디움])\n  C --> E((원))',
+}
+
 // subgraph 그룹 박스를 그리는 커스텀 노드 (멤버 노드 뒤에 깔리는 사각 박스 + 제목)
 function GroupNode({ data }) {
   return (
@@ -379,6 +390,81 @@ function EditorInner({
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
+  // ---- Undo/Redo (코드 편집 히스토리) ----
+  const historyRef = useRef([code])
+  const indexRef = useRef(0)
+  const isUndoRedoRef = useRef(false)
+  const lastEditTimeRef = useRef(0)
+
+  useEffect(() => {
+    if (isUndoRedoRef.current) {
+      isUndoRedoRef.current = false
+      return
+    }
+    const hist = historyRef.current
+    if (hist[indexRef.current] === code) return
+    const now = Date.now()
+    const coalesce = now - lastEditTimeRef.current < 600 // 빠른 타이핑은 한 단계로 합침
+    lastEditTimeRef.current = now
+    const next = hist.slice(0, indexRef.current + 1)
+    if (coalesce && next.length > 1) {
+      next[next.length - 1] = code
+    } else {
+      next.push(code)
+      if (next.length > 100) next.shift()
+    }
+    historyRef.current = next
+    indexRef.current = next.length - 1
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code])
+
+  // 코드를 프로그램적으로 적용(템플릿/방향/undo) → 즉시 재파싱
+  const applyCodeAndParse = (text) => {
+    setCode(text)
+    runParse(text)
+  }
+
+  const undo = () => {
+    if (indexRef.current > 0) {
+      indexRef.current -= 1
+      isUndoRedoRef.current = true
+      applyCodeAndParse(historyRef.current[indexRef.current])
+    }
+  }
+  const redo = () => {
+    if (indexRef.current < historyRef.current.length - 1) {
+      indexRef.current += 1
+      isUndoRedoRef.current = true
+      applyCodeAndParse(historyRef.current[indexRef.current])
+    }
+  }
+
+  // 텍스트영역 단축키: Ctrl+Z / Ctrl+Y(또는 Ctrl+Shift+Z)
+  const onCodeKeyDown = (e) => {
+    const mod = e.ctrlKey || e.metaKey
+    const k = e.key.toLowerCase()
+    if (mod && k === 'z' && !e.shiftKey) {
+      e.preventDefault()
+      undo()
+    } else if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) {
+      e.preventDefault()
+      redo()
+    }
+  }
+
+  // 레이아웃 방향 TD <-> LR 토글 (코드 헤더 변경)
+  const toggleDirection = () => {
+    const re = /^(\s*(?:graph|flowchart)\s+)(TB|TD|LR|RL|BT)\b/i
+    const m = code.match(re)
+    if (!m) return
+    const isVertical = /^(TB|TD|BT)$/i.test(m[2])
+    applyCodeAndParse(code.replace(re, `$1${isVertical ? 'LR' : 'TD'}`))
+  }
+
+  const insertTemplate = (key) => {
+    if (TEMPLATES[key]) applyCodeAndParse(TEMPLATES[key])
+  }
+
   const btnClass =
     'rounded-md border border-slate-300 bg-white/90 px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm hover:bg-white'
 
@@ -393,9 +479,51 @@ function EditorInner({
           <h1 className="text-sm font-semibold tracking-tight">Mermaid 코드</h1>
           <span className="text-xs text-slate-400">flowchart (mermaid 파서)</span>
         </div>
+        {/* 코드 편의 툴바: 예제 / 방향 / undo-redo */}
+        <div className="flex items-center gap-1 border-b border-slate-700 bg-slate-800/60 px-2 py-1">
+          <select
+            value=""
+            onChange={(e) => {
+              if (e.target.value) insertTemplate(e.target.value)
+            }}
+            className="rounded bg-slate-700 px-1.5 py-1 text-xs text-slate-200 outline-none"
+            title="예제 템플릿 삽입"
+          >
+            <option value="">예제 삽입…</option>
+            <option value="basic">기본 플로우차트</option>
+            <option value="decision">조건 분기</option>
+            <option value="subgraph">서브그래프</option>
+            <option value="shapes">도형 모음</option>
+          </select>
+          <button
+            type="button"
+            onClick={toggleDirection}
+            className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
+            title="레이아웃 방향 TD↔LR"
+          >
+            ⇄ 방향
+          </button>
+          <button
+            type="button"
+            onClick={undo}
+            className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
+            title="실행 취소 (Ctrl+Z)"
+          >
+            ↩ Undo
+          </button>
+          <button
+            type="button"
+            onClick={redo}
+            className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
+            title="다시 실행 (Ctrl+Y)"
+          >
+            ↪ Redo
+          </button>
+        </div>
         <textarea
           value={code}
           onChange={handleCodeChange}
+          onKeyDown={onCodeKeyDown}
           spellCheck={false}
           className="flex-1 resize-none bg-slate-900 p-4 font-mono text-sm leading-relaxed text-slate-100 outline-none"
           placeholder={'graph TD\n  A[시작] --> B[종료]'}
@@ -479,7 +607,7 @@ function EditorInner({
 }
 
 // 상단 탭 바: 여러 Mermaid 다이어그램을 탭으로 전환 (더블클릭으로 이름 변경)
-function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename, right }) {
+function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename, onReorder, right }) {
   const [editingId, setEditingId] = useState(null)
   const [draft, setDraft] = useState('')
   const inputRef = useRef(null)
@@ -507,7 +635,15 @@ function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename, right }) {
             key={t.id}
             onClick={() => onSelect(t.id)}
             onDoubleClick={() => startEdit(t)}
-            title="더블클릭하여 이름 변경"
+            draggable={!editing}
+            onDragStart={(e) => e.dataTransfer.setData('text/plain', String(t.id))}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault()
+              const from = Number(e.dataTransfer.getData('text/plain'))
+              if (!Number.isNaN(from)) onReorder(from, t.id)
+            }}
+            title="더블클릭하여 이름 변경 · 드래그하여 순서 변경"
             className={`group flex cursor-pointer items-center gap-2 rounded-t-md px-3 py-1.5 text-sm ${
               active
                 ? 'bg-slate-900 text-slate-100'
@@ -636,6 +772,18 @@ export default function MermaidVisualEditor() {
     setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, name } : t)))
   }
 
+  const reorderTabs = (fromId, toId) => {
+    setTabs((ts) => {
+      const from = ts.findIndex((t) => t.id === fromId)
+      const to = ts.findIndex((t) => t.id === toId)
+      if (from < 0 || to < 0 || from === to) return ts
+      const next = [...ts]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      return next
+    })
+  }
+
   // .mmd/.txt 파일을 새 탭으로 가져오기
   const mmdInputRef = useRef(null)
   const jsonInputRef = useRef(null)
@@ -729,6 +877,7 @@ export default function MermaidVisualEditor() {
         onAdd={addTab}
         onClose={closeTab}
         onRename={renameTab}
+        onReorder={reorderTabs}
         right={
           <>
             <button
