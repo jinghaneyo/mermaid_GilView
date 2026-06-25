@@ -9,6 +9,7 @@ import {
   type OnConnect,
   type OnDelete,
   type NodeTypes,
+  type EdgeTypes,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { AppNode, AppEdge } from '../lib/types'
@@ -21,6 +22,7 @@ interface Props {
   onConnect: OnConnect
   onDelete: OnDelete<AppNode, AppEdge>
   nodeTypes: NodeTypes
+  edgeTypes: EdgeTypes
 }
 
 export default function FlowCanvas({
@@ -31,6 +33,7 @@ export default function FlowCanvas({
   onConnect,
   onDelete,
   nodeTypes,
+  edgeTypes,
 }: Props) {
   return (
     <div className="h-full w-full bg-slate-50">
@@ -44,6 +47,7 @@ export default function FlowCanvas({
           onDelete={onDelete}
           deleteKeyCode={['Backspace', 'Delete']}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           fitView
           fitViewOptions={{ padding: 0.2 }}
           proOptions={{ hideAttribution: true }}

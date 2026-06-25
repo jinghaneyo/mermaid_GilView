@@ -8,6 +8,7 @@ import {
 import MermaidEditor from './components/MermaidEditor'
 import FlowCanvas from './components/FlowCanvas'
 import EditableNode, { LabelChangeContext } from './components/EditableNode'
+import EditableEdge, { EdgeLabelChangeContext } from './components/EditableEdge'
 import { convertMermaid } from './lib/convertMermaid'
 import { convertCanvasToMermaid } from './lib/convertCanvasToMermaid'
 import type { AppNode, AppEdge } from './lib/types'
@@ -19,6 +20,7 @@ const INITIAL_CODE = `graph TD
   C --> D`
 
 const nodeTypes = { editable: EditableNode }
+const edgeTypes = { editable: EditableEdge }
 
 export default function App() {
   const [code, setCode] = useState(INITIAL_CODE)
@@ -77,6 +79,7 @@ export default function App() {
       setEdges(
         res.edges.map((e) => ({
           id: e.id,
+          type: 'editable',
           source: e.source,
           target: e.target,
           ...(e.label ? { label: e.label } : {}),
@@ -101,6 +104,7 @@ export default function App() {
       const newEdge: AppEdge = {
         ...conn,
         id: `${conn.source}-${conn.target}-${Date.now()}`,
+        type: 'editable',
       }
       const nextEdges = addEdge(newEdge, edgesRef.current)
       setEdges(nextEdges)
@@ -119,6 +123,18 @@ export default function App() {
       syncCanvasToCode(nextNodes, edgesRef.current)
     },
     [setNodes, syncCanvasToCode],
+  )
+
+  // 엣지 라벨 인라인 편집 → 코드 갱신 (빈 라벨이면 라벨 제거)
+  const handleEdgeLabelChange = useCallback(
+    (id: string, label: string) => {
+      const nextEdges = edgesRef.current.map((e) =>
+        e.id === id ? { ...e, label: label || undefined } : e,
+      )
+      setEdges(nextEdges)
+      syncCanvasToCode(nodesRef.current, nextEdges)
+    },
+    [setEdges, syncCanvasToCode],
   )
 
   // 캔버스에서 노드/엣지 삭제(Delete/Backspace) → 코드 갱신
@@ -168,15 +184,18 @@ export default function App() {
           + 노드 추가
         </button>
         <LabelChangeContext.Provider value={handleLabelChange}>
-          <FlowCanvas
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onDelete={onDelete}
-            nodeTypes={nodeTypes}
-          />
+          <EdgeLabelChangeContext.Provider value={handleEdgeLabelChange}>
+            <FlowCanvas
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onDelete={onDelete}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
+            />
+          </EdgeLabelChangeContext.Provider>
         </LabelChangeContext.Provider>
       </div>
     </div>
