@@ -27,8 +27,8 @@ function computeGroups(
     for (const n of members) {
       minX = Math.min(minX, n.position.x)
       minY = Math.min(minY, n.position.y)
-      maxX = Math.max(maxX, n.position.x + NODE_WIDTH)
-      maxY = Math.max(maxY, n.position.y + NODE_HEIGHT)
+      maxX = Math.max(maxX, n.position.x + (n.width ?? NODE_WIDTH))
+      maxY = Math.max(maxY, n.position.y + (n.height ?? NODE_HEIGHT))
     }
 
     groups.push({

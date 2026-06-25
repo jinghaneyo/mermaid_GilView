@@ -10,6 +10,7 @@ export type AppEdge = Edge
 export interface GraphNode {
   id: string
   label: string
+  shape?: string // 'rect' | 'diamond' | 'cylinder' | 'round' | 'stadium' | 'circle' ...
 }
 
 export interface GraphEdge {
@@ -46,8 +47,11 @@ export interface GroupBox {
 // React Flow 호환 출력
 export interface FlowNode {
   id: string
-  data: { label: string }
+  type?: string
+  data: { label: string; shape?: string }
   position: { x: number; y: number }
+  width?: number
+  height?: number
 }
 
 export interface FlowEdge {

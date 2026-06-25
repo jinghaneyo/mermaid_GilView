@@ -6,6 +6,8 @@ import {
   BackgroundVariant,
   Controls,
   MiniMap,
+  Handle,
+  Position,
   useNodesState,
   useEdgesState,
   addEdge,
@@ -69,7 +71,100 @@ function GroupNode({ data }) {
   )
 }
 
-const nodeTypes = { group: GroupNode }
+// 노드 모양별 본체 렌더 (마름모/원통/원/스타디움/사각형)
+function ShapeBody({ shape, label }) {
+  const stroke = '#94a3b8' // slate-400
+  const fill = 'white'
+
+  if (shape === 'diamond') {
+    return (
+      <div className="relative h-full w-full">
+        <svg
+          className="absolute inset-0 h-full w-full"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+        >
+          <polygon
+            points="50,3 97,50 50,97 3,50"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+        <div className="absolute inset-0 flex items-center justify-center px-3 text-center text-xs text-slate-800">
+          {label}
+        </div>
+      </div>
+    )
+  }
+
+  if (shape === 'cylinder') {
+    return (
+      <div className="relative h-full w-full">
+        <svg
+          className="absolute inset-0 h-full w-full"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+        >
+          <path
+            d="M2,10 V90 A48,9 0 0 0 98,90 V10"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+          <ellipse
+            cx="50"
+            cy="10"
+            rx="48"
+            ry="9"
+            fill={fill}
+            stroke={stroke}
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+        <div className="absolute inset-0 flex items-center justify-center px-2 pt-3 text-center text-sm text-slate-800">
+          {label}
+        </div>
+      </div>
+    )
+  }
+
+  const base =
+    'flex h-full w-full items-center justify-center border border-slate-400 bg-white px-3 text-center text-sm text-slate-800 shadow-sm'
+  if (shape === 'circle' || shape === 'doublecircle') {
+    return (
+      <div
+        className={`${base} rounded-full ${shape === 'doublecircle' ? 'ring-2 ring-slate-400 ring-offset-1' : ''}`}
+      >
+        {label}
+      </div>
+    )
+  }
+  if (shape === 'stadium') {
+    return <div className={`${base} rounded-full`}>{label}</div>
+  }
+  if (shape === 'round') {
+    return <div className={`${base} rounded-2xl`}>{label}</div>
+  }
+  // rect (기본)
+  return <div className={`${base} rounded-md`}>{label}</div>
+}
+
+// 커스텀 노드: 모양 본체 + 위/아래 연결 핸들
+function ShapeNode({ data }) {
+  return (
+    <div className="relative h-full w-full">
+      <Handle type="target" position={Position.Top} className="!bg-slate-400" />
+      <ShapeBody shape={data.shape || 'rect'} label={data.label} />
+      <Handle type="source" position={Position.Bottom} className="!bg-slate-400" />
+    </div>
+  )
+}
+
+const nodeTypes = { group: GroupNode, shape: ShapeNode }
 
 function EditorInner() {
   const [code, setCode] = useState(INITIAL_CODE)
@@ -128,20 +223,25 @@ function EditorInner() {
       // 멤버 노드는 그룹의 자식(parentId)으로 두고 좌표를 그룹 기준 상대좌표로 변환
       // -> 그룹을 드래그하면 자식도 함께 이동, extent:'parent'로 박스 안에 유지
       const flowNodes = res.nodes.map((n) => {
+        // 모양별 크기를 style로 강제(커스텀 노드는 자동 크기라 명시 필요)
+        const styled = {
+          ...n,
+          style: { width: n.width, height: n.height },
+          zIndex: 1,
+        }
         const g = nodeToGroup.get(n.id)
         if (g) {
           return {
-            ...n,
+            ...styled,
             parentId: `__group_${g.id}`,
             extent: 'parent',
             position: {
               x: n.position.x - g.position.x,
               y: n.position.y - g.position.y,
             },
-            zIndex: 1,
           }
         }
-        return { ...n, zIndex: 1 }
+        return styled
       })
 
       setNodes([...groupNodes, ...flowNodes])

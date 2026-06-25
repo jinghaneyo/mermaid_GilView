@@ -9,6 +9,25 @@ function ensureInit() {
   }
 }
 
+// mermaid vertex.type -> 우리 shape 키
+function mapShape(type: string | undefined): string {
+  switch (type) {
+    case 'diamond': // {텍스트}
+      return 'diamond'
+    case 'cylinder': // [(텍스트)]
+      return 'cylinder'
+    case 'circle':
+    case 'doublecircle': // ((텍스트))
+      return type
+    case 'stadium': // ([텍스트])
+      return 'stadium'
+    case 'round': // (텍스트)
+      return 'round'
+    default: // square/rect/그 외 -> 사각형
+      return 'rect'
+  }
+}
+
 function normalizeDirection(raw: string | undefined): Direction {
   switch (raw) {
     case 'LR':
@@ -94,6 +113,7 @@ export async function parseMermaid(
     const nodes: GraphNode[] = Array.from(verticesMap.values()).map((v) => ({
       id: v.id,
       label: v.text !== undefined && v.text !== '' ? v.text : v.id,
+      shape: mapShape(v.type),
     }))
 
     // getEdges() returns an array with start/end/text fields
