@@ -19,10 +19,27 @@ export interface GraphEdge {
   label?: string
 }
 
+// subgraph(그룹) 정보: 어떤 노드들이 한 그룹에 속하는지 + 제목
+export interface Subgraph {
+  id: string
+  title: string
+  nodeIds: string[]
+}
+
 export interface ParsedGraph {
   nodes: GraphNode[]
   edges: GraphEdge[]
   direction: Direction
+  subgraphs?: Subgraph[]
+}
+
+// 그룹 박스(레이아웃 후 멤버 노드들을 감싸는 사각형)
+export interface GroupBox {
+  id: string
+  label: string
+  position: { x: number; y: number }
+  width: number
+  height: number
 }
 
 // React Flow 호환 출력
@@ -48,4 +65,5 @@ export interface ConvertResult {
   nodes: FlowNode[]
   edges: FlowEdge[]
   error: string | null
+  groups?: GroupBox[]
 }

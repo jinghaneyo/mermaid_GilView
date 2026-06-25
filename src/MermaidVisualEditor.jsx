@@ -58,6 +58,19 @@ export function convertCanvasToMermaid(nodes, edges) {
 
 const INITIAL_CODE = 'graph TD\nA[시작] --> B[종료]'
 
+// subgraph 그룹 박스를 그리는 커스텀 노드 (멤버 노드 뒤에 깔리는 사각 박스 + 제목)
+function GroupNode({ data }) {
+  return (
+    <div className="h-full w-full rounded-lg border-2 border-amber-400/80 bg-amber-200/20">
+      <div className="px-2 pt-1 text-xs font-semibold text-amber-600">
+        {data.label}
+      </div>
+    </div>
+  )
+}
+
+const nodeTypes = { group: GroupNode }
+
 function EditorInner() {
   const [code, setCode] = useState(INITIAL_CODE)
   const [error, setError] = useState(null)
@@ -92,7 +105,19 @@ function EditorInner() {
         return
       }
       setError(null)
-      setNodes(res.nodes)
+      // subgraph 그룹 박스를 멤버 노드 "뒤"에 깔고, 일반 노드는 그 위에 둔다
+      const groupNodes = (res.groups ?? []).map((g) => ({
+        id: `__group_${g.id}`,
+        type: 'group',
+        position: g.position,
+        data: { label: g.label },
+        style: { width: g.width, height: g.height, pointerEvents: 'none' },
+        selectable: false,
+        draggable: false,
+        zIndex: 0,
+      }))
+      const flowNodes = res.nodes.map((n) => ({ ...n, zIndex: 1 }))
+      setNodes([...groupNodes, ...flowNodes])
       setEdges(res.edges)
     })
   }
@@ -112,8 +137,10 @@ function EditorInner() {
   }
 
   // Canvas -> Code : 현재 노드/선을 Mermaid 코드로 변환해 Textarea 갱신
+  // (그룹 박스 노드는 실제 노드가 아니므로 코드 변환에서 제외)
   const syncCanvasToCode = (nextNodes, nextEdges) => {
-    setCode(convertCanvasToMermaid(nextNodes, nextEdges))
+    const realNodes = nextNodes.filter((n) => n.type !== 'group')
+    setCode(convertCanvasToMermaid(realNodes, nextEdges))
   }
 
   // 새 화살표 연결 -> 엣지 추가 후 코드 갱신
@@ -214,6 +241,7 @@ function EditorInner() {
           colorMode={theme}
           nodes={nodes}
           edges={edges}
+          nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}

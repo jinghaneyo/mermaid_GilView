@@ -1,8 +1,8 @@
 import dagre from '@dagrejs/dagre'
 import type { ParsedGraph, FlowGraph, FlowNode, FlowEdge } from './types'
 
-const NODE_WIDTH = 160
-const NODE_HEIGHT = 44
+export const NODE_WIDTH = 160
+export const NODE_HEIGHT = 44
 
 export function layout(graph: ParsedGraph): FlowGraph {
   // multigraph: true is required to set named edges (preserves parallel edges)

@@ -38,10 +38,17 @@ interface DiagramEdge {
   labelType?: string
 }
 
+interface DiagramSubGraph {
+  id?: string
+  title?: string
+  nodes: string[]
+}
+
 interface DiagramDb {
   getVertices: () => Map<string, DiagramVertex>
   getEdges: () => DiagramEdge[]
   getDirection?: () => string
+  getSubGraphs?: () => DiagramSubGraph[]
 }
 
 interface DiagramLike {
@@ -101,7 +108,15 @@ export async function parseMermaid(
     // getDirection() returns 'TD', 'LR', 'RL', 'BT' — normalizeDirection maps TD→TB
     const direction = normalizeDirection(db.getDirection?.())
 
-    return { graph: { nodes, edges, direction }, error: null }
+    // subgraph(그룹) 추출: 멤버 노드 id 목록 + 제목
+    const rawSubgraphs = db.getSubGraphs?.() ?? []
+    const subgraphs = rawSubgraphs.map((s, i) => ({
+      id: s.id ?? `subgraph-${i}`,
+      title: s.title ?? s.id ?? '',
+      nodeIds: Array.isArray(s.nodes) ? s.nodes : [],
+    }))
+
+    return { graph: { nodes, edges, direction, subgraphs }, error: null }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return { graph: null, error: message }
