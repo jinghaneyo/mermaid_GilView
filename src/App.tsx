@@ -1,25 +1,142 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useNodesState,
+  useEdgesState,
+  addEdge,
+  type Connection,
+} from '@xyflow/react'
 import MermaidEditor from './components/MermaidEditor'
 import FlowCanvas from './components/FlowCanvas'
-import { useMermaidToFlow } from './hooks/useMermaidToFlow'
+import EditableNode, { LabelChangeContext } from './components/EditableNode'
+import { convertMermaid } from './lib/convertMermaid'
+import { convertCanvasToMermaid } from './lib/convertCanvasToMermaid'
+import type { AppNode, AppEdge } from './lib/types'
 
 const INITIAL_CODE = `graph TD
-  A[시작] --> B{조건}
+  A[시작] --> B[조건]
   B -->|예| C[처리]
   B -->|아니오| D[종료]
   C --> D`
 
+const nodeTypes = { editable: EditableNode }
+
 export default function App() {
   const [code, setCode] = useState(INITIAL_CODE)
-  const { nodes, edges, error } = useMermaidToFlow(code)
+  const [error, setError] = useState<string | null>(null)
+  const [nodes, setNodes, onNodesChange] = useNodesState<AppNode>([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState<AppEdge>([])
+
+  // 최근 편집 출처: 'code'(텍스트) → 캔버스 재레이아웃, 'canvas' → 코드 문자열만 갱신
+  const source = useRef<'code' | 'canvas'>('code')
+  // 핸들러에서 최신 상태를 읽기 위한 ref
+  const nodesRef = useRef(nodes)
+  const edgesRef = useRef(edges)
+  nodesRef.current = nodes
+  edgesRef.current = edges
+
+  // 캔버스 → 코드: 레이아웃을 다시 돌리지 않고 문자열만 만든다 (노드 위치 보존)
+  const syncCanvasToCode = useCallback(
+    (nextNodes: AppNode[], nextEdges: AppEdge[]) => {
+      source.current = 'canvas'
+      const flowNodes = nextNodes.map((n) => ({
+        id: n.id,
+        data: { label: n.data.label },
+        position: n.position,
+      }))
+      const flowEdges = nextEdges.map((e) => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        ...(typeof e.label === 'string' && e.label ? { label: e.label } : {}),
+      }))
+      setCode(convertCanvasToMermaid(flowNodes, flowEdges))
+    },
+    [],
+  )
+
+  // 코드 → 캔버스: 텍스트 편집이 출처일 때만 파싱 + 레이아웃 (디바운스 250ms)
+  useEffect(() => {
+    if (source.current !== 'code') return // 캔버스에서 비롯된 코드 변경 → 재레이아웃 생략
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      const res = await convertMermaid(code)
+      if (cancelled) return
+      if (res.error) {
+        setError(res.error) // 파싱 실패: 직전 그래프 유지, 에러만 갱신
+        return
+      }
+      setError(null)
+      setNodes(
+        res.nodes.map((n) => ({
+          id: n.id,
+          type: 'editable',
+          position: n.position,
+          data: { label: n.data.label },
+        })),
+      )
+      setEdges(
+        res.edges.map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          ...(e.label ? { label: e.label } : {}),
+        })),
+      )
+    }, 250)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [code, setNodes, setEdges])
+
+  // 텍스트 편집 → 출처를 'code'로 표시
+  const onCodeChange = useCallback((value: string) => {
+    source.current = 'code'
+    setCode(value)
+  }, [])
+
+  // 캔버스에서 노드 연결 → 엣지 추가 후 코드 갱신
+  const onConnect = useCallback(
+    (conn: Connection) => {
+      const newEdge: AppEdge = {
+        ...conn,
+        id: `${conn.source}-${conn.target}-${Date.now()}`,
+      }
+      const nextEdges = addEdge(newEdge, edgesRef.current)
+      setEdges(nextEdges)
+      syncCanvasToCode(nodesRef.current, nextEdges)
+    },
+    [setEdges, syncCanvasToCode],
+  )
+
+  // 노드 라벨 인라인 편집 → 코드 갱신
+  const handleLabelChange = useCallback(
+    (id: string, label: string) => {
+      const nextNodes = nodesRef.current.map((n) =>
+        n.id === id ? { ...n, data: { ...n.data, label } } : n,
+      )
+      setNodes(nextNodes)
+      syncCanvasToCode(nextNodes, edgesRef.current)
+    },
+    [setNodes, syncCanvasToCode],
+  )
 
   return (
     <div className="flex h-full w-full">
       <div className="w-2/5 min-w-[280px] max-w-[640px] border-r border-slate-700">
-        <MermaidEditor code={code} onChange={setCode} error={error} />
+        <MermaidEditor code={code} onChange={onCodeChange} error={error} />
       </div>
       <div className="flex-1">
-        <FlowCanvas nodes={nodes} edges={edges} />
+        <LabelChangeContext.Provider value={handleLabelChange}>
+          <FlowCanvas
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            nodeTypes={nodeTypes}
+          />
+        </LabelChangeContext.Provider>
       </div>
     </div>
   )

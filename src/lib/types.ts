@@ -1,4 +1,11 @@
+import type { Node, Edge } from '@xyflow/react'
+
 export type Direction = 'TB' | 'BT' | 'LR' | 'RL'
+
+// App/캔버스에서 사용하는 React Flow 노드/엣지 타입
+export type AppNodeData = { label: string }
+export type AppNode = Node<AppNodeData>
+export type AppEdge = Edge
 
 export interface GraphNode {
   id: string
