@@ -20,3 +20,28 @@ html, body, #root {
 .react-flow.dark .react-flow__connectionline {
   stroke: #94a3b8;
 }
+
+@keyframes code-line-flash {
+  0%, 100% {
+    opacity: 0;
+  }
+  15%, 45%, 75% {
+    opacity: 1;
+  }
+  30%, 60% {
+    opacity: 0.25;
+  }
+}
+
+.code-line-flash {
+  animation: code-line-flash 1.6s ease-in-out;
+  background: rgb(250 204 21 / 0.28);
+  border-block: 1px solid rgb(250 204 21 / 0.55);
+  box-shadow: 0 0 0 1px rgb(250 204 21 / 0.18);
+}
+
+.code-editor-textarea {
+  overflow: auto;
+  overflow-wrap: normal;
+  white-space: pre;
+}

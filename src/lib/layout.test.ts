@@ -45,3 +45,18 @@ describe('layout', () => {
     expect(edges).toEqual([{ id: 'A-B', source: 'A', target: 'B', label: 'yes' }])
   })
 })
+
+describe('layout text width options', () => {
+  it('expands node width for long labels when fitNodeWidthToText is enabled', () => {
+    const { nodes } = layout(
+      {
+        direction: 'TB',
+        nodes: [{ id: 'A', label: 'A very long process label that needs more room' }],
+        edges: [],
+      },
+      { fitNodeWidthToText: true },
+    )
+
+    expect(nodes[0].width).toBeGreaterThan(160)
+  })
+})

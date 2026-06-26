@@ -1,5 +1,5 @@
 import { parseMermaid } from './parseMermaid'
-import { layout, NODE_WIDTH, NODE_HEIGHT } from './layout'
+import { layout, NODE_WIDTH, NODE_HEIGHT, type LayoutOptions } from './layout'
 import type { ConvertResult, FlowNode, GroupBox, Subgraph } from './types'
 
 // 그룹 박스 여백/제목 공간
@@ -44,12 +44,17 @@ function computeGroups(
   return groups
 }
 
-export async function convertMermaid(code: string): Promise<ConvertResult> {
+export interface ConvertMermaidOptions extends LayoutOptions {}
+
+export async function convertMermaid(
+  code: string,
+  options: ConvertMermaidOptions = {},
+): Promise<ConvertResult> {
   const { graph, error } = await parseMermaid(code)
   if (error || !graph) {
     return { nodes: [], edges: [], error: error ?? '알 수 없는 오류' }
   }
-  const { nodes, edges } = layout(graph)
+  const { nodes, edges } = layout(graph, options)
   const groups = computeGroups(graph.subgraphs ?? [], nodes)
   return { nodes, edges, error: null, groups }
 }

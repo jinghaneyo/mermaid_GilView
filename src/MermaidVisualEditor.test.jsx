@@ -29,3 +29,19 @@ describe('MermaidVisualEditor: convertCanvasToMermaid (canvas -> code)', () => {
     expect(convertCanvasToMermaid(nodes, [])).toBe('graph TD\n  X[X]')
   })
 })
+
+describe('MermaidVisualEditor: safe Mermaid labels', () => {
+  it('quotes node labels that include Mermaid shape syntax characters', () => {
+    const nodes = [
+      {
+        id: 'main',
+        data: { label: 'main() (진입점/설정파싱2)' },
+        position: { x: 0, y: 0 },
+      },
+    ]
+
+    expect(convertCanvasToMermaid(nodes, [])).toBe(
+      'graph TD\n  main["main() (진입점/설정파싱2)"]',
+    )
+  })
+})

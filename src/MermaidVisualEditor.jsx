@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -28,6 +28,13 @@ function triggerDownload(url, filename) {
 // convertMermaid = parseMermaid(mermaid 파서) + layout(dagre 계층 배치)
 // → subgraph / 노드 모양({},()) / 점선·굵은 화살표 등 복잡한 문법도 mermaid와 동일하게 해석됨.
 import { convertMermaid } from './lib/convertMermaid'
+import { scrollTopForLine } from './lib/codeEditorScroll'
+import { estimateLabelEditorRows } from './lib/labelEditorSizing'
+import { findNodeLocationInMermaid } from './lib/findNodeLineInMermaid'
+import {
+  formatMermaidLabel,
+  updateNodeLabelInMermaid,
+} from './lib/updateNodeLabelInMermaid'
 
 /* ------------------------------------------------------------------ *
  * convertCanvasToMermaid: { nodes, edges } -> Mermaid 텍스트
@@ -43,7 +50,7 @@ export function convertCanvasToMermaid(nodes, edges) {
   for (const node of nodes ?? []) {
     const raw = node.data?.label
     const label = raw !== undefined && raw !== '' ? raw : node.id
-    lines.push(`  ${node.id}[${label}]`)
+    lines.push(`  ${node.id}[${formatMermaidLabel(label)}]`)
   }
 
   for (const edge of edges ?? []) {
@@ -184,11 +191,71 @@ function ShapeBody({ shape, label }) {
 }
 
 // 커스텀 노드: 모양 본체 + 위/아래 연결 핸들
-function ShapeNode({ data }) {
+const NodeLabelChangeContext = createContext(() => {})
+
+function ShapeNode({ id, data, width }) {
+  const onLabelChange = useContext(NodeLabelChangeContext)
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(data.label ?? id)
+  const textareaRef = useRef(null)
+
+  useEffect(() => {
+    if (!editing) setValue(data.label ?? id)
+  }, [data.label, editing, id])
+
+  useEffect(() => {
+    if (!editing || !textareaRef.current) return
+    const editor = textareaRef.current
+    editor.focus()
+    editor.select()
+  }, [editing])
+
+  useEffect(() => {
+    if (!editing || !textareaRef.current) return
+    const editor = textareaRef.current
+    editor.style.height = 'auto'
+    editor.style.height = `${editor.scrollHeight}px`
+  }, [editing, value])
+
+  const commit = () => {
+    const next = value.trim() || id
+    setEditing(false)
+    if (next !== data.label) onLabelChange(id, next)
+  }
+
   return (
-    <div className="relative h-full w-full">
+    <div
+      className="relative h-full w-full"
+      onDoubleClick={(e) => {
+        e.stopPropagation()
+        setValue(data.label ?? id)
+        setEditing(true)
+      }}
+    >
       <Handle type="target" position={Position.Top} className="!bg-slate-400" />
       <ShapeBody shape={data.shape || 'rect'} label={data.label} />
+      {editing && (
+        <div className="absolute inset-x-0 top-1/2 z-10 flex -translate-y-1/2 items-center justify-center">
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onBlur={commit}
+            onDoubleClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                commit()
+              } else if (e.key === 'Escape') {
+                setValue(data.label ?? id)
+                setEditing(false)
+              }
+            }}
+            rows={estimateLabelEditorRows(value, width ?? 160)}
+            className="nodrag nowheel w-full resize-none overflow-hidden rounded border border-blue-400 bg-white px-2 py-1 text-center text-sm leading-relaxed text-slate-900 shadow outline-none ring-2 ring-blue-500"
+          />
+        </div>
+      )}
       <Handle type="source" position={Position.Bottom} className="!bg-slate-400" />
     </div>
   )
@@ -203,6 +270,8 @@ function EditorInner({
   setTheme,
   showGrid,
   setShowGrid,
+  fitNodeWidthToText,
+  setFitNodeWidthToText,
   leftWidth,
   setLeftWidth,
 }) {
@@ -210,9 +279,17 @@ function EditorInner({
   const [error, setError] = useState(null)
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  const [highlightedCodeLine, setHighlightedCodeLine] = useState(null)
+  const [codeScrollTop, setCodeScrollTop] = useState(0)
+  const [codeLineMetrics, setCodeLineMetrics] = useState({
+    lineHeight: 22,
+    paddingTop: 16,
+  })
 
   // 스플리터 드래그 시 컨테이너 기준 좌표 계산용
   const containerRef = useRef(null)
+  const codeTextareaRef = useRef(null)
+  const codeHighlightTimerRef = useRef(null)
   const reactFlow = useReactFlow()
 
   // 핸들러에서 최신 상태를 읽기 위한 ref 미러
@@ -228,7 +305,7 @@ function EditorInner({
   // Code -> Canvas : mermaid 파서로 파싱 + dagre 배치
   const runParse = (text) => {
     const seq = ++seqRef.current
-    convertMermaid(text).then((res) => {
+    convertMermaid(text, { fitNodeWidthToText }).then((res) => {
       if (seq !== seqRef.current) return // 더 최신 입력이 있으면 폐기
       if (res.error) {
         setError(res.error) // 파싱 실패: 직전 그래프 유지, 에러만 표시
@@ -290,6 +367,17 @@ function EditorInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => {
+    return () => {
+      if (codeHighlightTimerRef.current) clearTimeout(codeHighlightTimerRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    runParse(code)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitNodeWidthToText])
+
   // 코드 변경(타이핑/캔버스 동기화)을 상위 탭 상태로 올려 보존
   useEffect(() => {
     if (onCodeChange) onCodeChange(code)
@@ -309,6 +397,51 @@ function EditorInner({
   const syncCanvasToCode = (nextNodes, nextEdges) => {
     const realNodes = nextNodes.filter((n) => n.type !== 'group')
     setCode(convertCanvasToMermaid(realNodes, nextEdges))
+  }
+
+  const handleNodeLabelChange = (id, label) => {
+    const nextCode = updateNodeLabelInMermaid(code, id, label)
+    setCode(nextCode)
+    runParse(nextCode)
+  }
+
+  const handleCodeScroll = (e) => {
+    setCodeScrollTop(e.currentTarget.scrollTop)
+  }
+
+  const handleCanvasNodeClick = (_event, node) => {
+    if (node.type === 'group') return
+    const location = findNodeLocationInMermaid(code, node.id, node.data?.label)
+    const textarea = codeTextareaRef.current
+    if (!location || !textarea) return
+
+    const styles = window.getComputedStyle(textarea)
+    const fontSize = Number.parseFloat(styles.fontSize) || 14
+    const lineHeight = Number.parseFloat(styles.lineHeight) || fontSize * 1.625
+    const paddingTop = Number.parseFloat(styles.paddingTop) || 0
+    const nextScrollTop = scrollTopForLine({
+      line: location.line,
+      lineHeight,
+      paddingTop,
+      clientHeight: textarea.clientHeight,
+      scrollHeight: textarea.scrollHeight,
+    })
+
+    textarea.focus()
+    textarea.setSelectionRange(location.start, location.end)
+    textarea.scrollTop = nextScrollTop
+    setCodeLineMetrics({ lineHeight, paddingTop })
+    setCodeScrollTop(nextScrollTop)
+
+    requestAnimationFrame(() => {
+      setHighlightedCodeLine({ line: location.line, key: Date.now() })
+    })
+
+    if (codeHighlightTimerRef.current) clearTimeout(codeHighlightTimerRef.current)
+    codeHighlightTimerRef.current = setTimeout(() => {
+      setHighlightedCodeLine(null)
+      codeHighlightTimerRef.current = null
+    }, 1800)
   }
 
   // 새 화살표 연결 -> 엣지 추가 후 코드 갱신
@@ -520,14 +653,32 @@ function EditorInner({
             ↪ Redo
           </button>
         </div>
+        <div className="relative min-h-0 flex-1">
         <textarea
+          ref={codeTextareaRef}
           value={code}
           onChange={handleCodeChange}
           onKeyDown={onCodeKeyDown}
+          onScroll={handleCodeScroll}
           spellCheck={false}
-          className="flex-1 resize-none bg-slate-900 p-4 font-mono text-sm leading-relaxed text-slate-100 outline-none"
+          wrap="off"
+          className="code-editor-textarea h-full w-full resize-none bg-slate-900 p-4 font-mono text-sm leading-relaxed text-slate-100 outline-none"
           placeholder={'graph TD\n  A[시작] --> B[종료]'}
         />
+          {highlightedCodeLine && (
+            <div
+              key={highlightedCodeLine.key}
+              className="code-line-flash pointer-events-none absolute left-0 right-0"
+              style={{
+                top:
+                  codeLineMetrics.paddingTop +
+                  highlightedCodeLine.line * codeLineMetrics.lineHeight -
+                  codeScrollTop,
+                height: codeLineMetrics.lineHeight,
+              }}
+            />
+          )}
+        </div>
         {error && (
           <div className="border-t border-red-800 bg-red-950/80 px-4 py-2 font-mono text-xs text-red-300">
             ⚠ {error}
@@ -576,31 +727,47 @@ function EditorInner({
           >
             {showGrid ? '⊞ 격자 끄기' : '⊞ 격자 켜기'}
           </button>
+          <button
+            type="button"
+            onClick={() => setFitNodeWidthToText((v) => !v)}
+            aria-pressed={fitNodeWidthToText}
+            className={
+              fitNodeWidthToText
+                ? 'rounded-md border border-blue-500 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 shadow-sm ring-2 ring-blue-500 hover:bg-blue-50'
+                : btnClass
+            }
+            title="도형 가로 길이를 텍스트에 맞춥니다"
+          >
+            {fitNodeWidthToText ? '너비 맞춤 ON' : '너비 맞춤 OFF'}
+          </button>
         </div>
 
-        <ReactFlow
-          colorMode={theme}
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onNodeDragStop={onNodeDragStop}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          proOptions={{ hideAttribution: true }}
-        >
-          {showGrid && (
-            <Background
-              variant={BackgroundVariant.Lines}
-              gap={20}
-              color={theme === 'dark' ? '#334155' : '#e2e8f0'}
-            />
-          )}
-          <Controls showInteractive={false} />
-          <MiniMap pannable zoomable />
-        </ReactFlow>
+        <NodeLabelChangeContext.Provider value={handleNodeLabelChange}>
+          <ReactFlow
+            colorMode={theme}
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onNodeClick={handleCanvasNodeClick}
+            onNodeDragStop={onNodeDragStop}
+            fitView
+            fitViewOptions={{ padding: 0.2 }}
+            proOptions={{ hideAttribution: true }}
+          >
+            {showGrid && (
+              <Background
+                variant={BackgroundVariant.Lines}
+                gap={20}
+                color={theme === 'dark' ? '#334155' : '#e2e8f0'}
+              />
+            )}
+            <Controls showInteractive={false} />
+            <MiniMap pannable zoomable />
+          </ReactFlow>
+        </NodeLabelChangeContext.Provider>
       </div>
     </div>
   )
@@ -704,7 +871,7 @@ const STORAGE_KEY = 'mermaid-gilview-workspace'
 const DEFAULT_WORKSPACE = {
   tabs: [{ id: 1, name: '다이어그램 1', code: INITIAL_CODE }],
   activeId: 1,
-  settings: { theme: 'light', showGrid: true, leftWidth: 440 },
+  settings: { theme: 'light', showGrid: true, fitNodeWidthToText: false, leftWidth: 440 },
 }
 
 function loadWorkspace() {
@@ -738,6 +905,9 @@ export default function MermaidVisualEditor() {
   // 설정(테마/격자/패널폭)은 앱 레벨 — 탭 전환에도 유지 + 저장
   const [theme, setTheme] = useState(init.settings.theme)
   const [showGrid, setShowGrid] = useState(init.settings.showGrid)
+  const [fitNodeWidthToText, setFitNodeWidthToText] = useState(
+    init.settings.fitNodeWidthToText,
+  )
   const [leftWidth, setLeftWidth] = useState(init.settings.leftWidth)
 
   // 변경 시 디바운스 자동 저장
@@ -752,7 +922,7 @@ export default function MermaidVisualEditor() {
             version: 1,
             tabs,
             activeId,
-            settings: { theme, showGrid, leftWidth },
+            settings: { theme, showGrid, fitNodeWidthToText, leftWidth },
           }),
         )
       } catch {
@@ -760,7 +930,7 @@ export default function MermaidVisualEditor() {
       }
     }, 400)
     return () => saveTimer.current && clearTimeout(saveTimer.current)
-  }, [tabs, activeId, theme, showGrid, leftWidth])
+  }, [tabs, activeId, theme, showGrid, fitNodeWidthToText, leftWidth])
 
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0]
 
@@ -805,7 +975,7 @@ export default function MermaidVisualEditor() {
       version: 1,
       tabs,
       activeId,
-      settings: { theme, showGrid, leftWidth },
+      settings: { theme, showGrid, fitNodeWidthToText, leftWidth },
     }
     const url = URL.createObjectURL(
       new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
@@ -826,6 +996,9 @@ export default function MermaidVisualEditor() {
         if (data.settings) {
           setTheme(data.settings.theme ?? theme)
           setShowGrid(data.settings.showGrid ?? showGrid)
+          setFitNodeWidthToText(
+            data.settings.fitNodeWidthToText ?? fitNodeWidthToText,
+          )
           setLeftWidth(data.settings.leftWidth ?? leftWidth)
         }
         idRef.current = Math.max(0, ...data.tabs.map((t) => t.id)) + 1
@@ -940,6 +1113,8 @@ export default function MermaidVisualEditor() {
             setTheme={setTheme}
             showGrid={showGrid}
             setShowGrid={setShowGrid}
+            fitNodeWidthToText={fitNodeWidthToText}
+            setFitNodeWidthToText={setFitNodeWidthToText}
             leftWidth={leftWidth}
             setLeftWidth={setLeftWidth}
           />
