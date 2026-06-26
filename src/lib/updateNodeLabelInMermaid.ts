@@ -2,14 +2,19 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-function escapeLabel(value: string): string {
-  return value.replace(/\r?\n/g, ' ').trim()
+function normalizeLabel(value: string): string {
+  return value.replace(/\r\n?/g, '\n').trim()
+}
+
+function encodeLineBreaks(value: string): string {
+  return value.replace(/\n/g, '<br/>')
 }
 
 export function formatMermaidLabel(value: string): string {
-  const label = escapeLabel(value)
+  const normalized = normalizeLabel(value)
+  const label = encodeLineBreaks(normalized)
   const escaped = label.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-  return /[\[\]{}()|"]/.test(escaped) ? `"${escaped}"` : escaped
+  return /[\[\]{}()|"<]|\n/.test(normalized) ? `"${escaped}"` : escaped
 }
 
 function insertDeclaration(code: string, id: string, label: string): string {
@@ -32,34 +37,31 @@ export function updateNodeLabelInMermaid(
   id: string,
   nextLabel: string,
 ): string {
-  const label = escapeLabel(nextLabel) || id
+  const label = normalizeLabel(nextLabel) || id
   const mermaidLabel = formatMermaidLabel(label)
   const escapedId = escapeRegExp(id)
-  const tokenPattern = new RegExp(
-    `(^|[^A-Za-z0-9_])(${escapedId})(\\(\\[|\\[\\(|\\(\\(|\\[|\\{|\\()([^\\r\\n]*?)(\\]\\)|\\)\\]|\\)\\)|\\]|\\}|\\))`,
-    'g',
-  )
-  let replaced = false
+  const delimiterPairs: Array<[string, string]> = [
+    ['([', '])'],
+    ['[(', ')]'],
+    ['((', '))'],
+    ['[', ']'],
+    ['{', '}'],
+    ['(', ')'],
+  ]
 
-  const nextCode = code.replace(
-    tokenPattern,
-    (match, prefix, nodeId, open, _oldLabel, close) => {
-      if (!isMatchingDelimiter(open, close)) return match
+  for (const [open, close] of delimiterPairs) {
+    const tokenPattern = new RegExp(
+      `(^|[^A-Za-z0-9_])(${escapedId})(${escapeRegExp(open)})(?:"(?:\\\\.|[^"\\\\])*"|[^\\r\\n]*?)(${escapeRegExp(close)})`,
+      'g',
+    )
+    let replaced = false
+    const nextCode = code.replace(tokenPattern, (_match, prefix, nodeId) => {
       replaced = true
       return `${prefix}${nodeId}${open}${mermaidLabel}${close}`
-    },
-  )
+    })
 
-  return replaced ? nextCode : insertDeclaration(code, id, label)
-}
+    if (replaced) return nextCode
+  }
 
-function isMatchingDelimiter(open: string, close: string): boolean {
-  return (
-    (open === '[' && close === ']') ||
-    (open === '{' && close === '}') ||
-    (open === '(' && close === ')') ||
-    (open === '((' && close === '))') ||
-    (open === '([' && close === '])') ||
-    (open === '[(' && close === ')]')
-  )
+  return insertDeclaration(code, id, label)
 }

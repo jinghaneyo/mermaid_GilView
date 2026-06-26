@@ -1,5 +1,16 @@
-import { describe, it, expect } from 'vitest'
+import { beforeEach, describe, it, expect } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import MermaidVisualEditor from './MermaidVisualEditor'
 import { convertCanvasToMermaid } from './MermaidVisualEditor'
+
+beforeEach(() => {
+  localStorage.clear()
+  global.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+})
 
 describe('MermaidVisualEditor: convertCanvasToMermaid (canvas -> code)', () => {
   it('graph TD 헤더와 노드 라벨, 엣지를 출력한다', () => {
@@ -61,5 +72,134 @@ describe('MermaidVisualEditor: safe Mermaid labels', () => {
     expect(convertCanvasToMermaid(nodes, [])).toBe(
       'graph TD\n  main["main() (진입점/설정파싱2)"]',
     )
+  })
+})
+
+describe('MermaidVisualEditor: node label editing', () => {
+  function loadTestDiagram(code = 'graph TD\n  A[Start] --> B[End]') {
+    localStorage.setItem(
+      'mermaid-gilview-workspace',
+      JSON.stringify({
+        tabs: [{ id: 1, name: 'Test', code }],
+        activeId: 1,
+        settings: {
+          theme: 'light',
+          showGrid: true,
+          fitNodeWidthToText: false,
+          leftWidth: 440,
+        },
+      }),
+    )
+  }
+
+  it('commits edited labels on blur without treating the blur event as a label', async () => {
+    loadTestDiagram()
+    render(<MermaidVisualEditor />)
+
+    const nodeLabel = await screen.findByText('Start')
+    fireEvent.doubleClick(nodeLabel)
+
+    const editor = await screen.findByDisplayValue('Start')
+    fireEvent.change(editor, { target: { value: 'Blur label' } })
+    fireEvent.blur(editor)
+
+    await waitFor(() => {
+      expect(screen.getByText('Blur label')).toBeTruthy()
+      expect(
+        screen
+          .getAllByRole('textbox')
+          .some(
+            (textbox) =>
+              textbox.value.includes('A[Blur label]') &&
+              textbox.value.includes('B[End]'),
+          ),
+      ).toBe(true)
+    })
+  })
+
+  it('keeps label editing active when clicking inside the label editor', async () => {
+    loadTestDiagram()
+    render(<MermaidVisualEditor />)
+
+    const nodeLabel = await screen.findByText('Start')
+    fireEvent.doubleClick(nodeLabel)
+
+    const editor = await screen.findByDisplayValue('Start')
+    fireEvent.change(editor, { target: { value: 'Inside click label' } })
+    fireEvent.mouseDown(editor)
+    fireEvent.click(editor)
+
+    expect(screen.getByDisplayValue('Inside click label')).toBeTruthy()
+
+    fireEvent.blur(editor)
+
+    await waitFor(() => {
+      expect(screen.getByText('Inside click label')).toBeTruthy()
+      expect(
+        screen
+          .getAllByRole('textbox')
+          .some(
+            (textbox) =>
+              textbox.value.includes('A[Inside click label]') &&
+              textbox.value.includes('B[End]'),
+          ),
+      ).toBe(true)
+    })
+  })
+
+  it('commits multiline labels with Enter', async () => {
+    loadTestDiagram()
+    render(<MermaidVisualEditor />)
+
+    const nodeLabel = await screen.findByText('Start')
+    fireEvent.doubleClick(nodeLabel)
+
+    const editor = await screen.findByDisplayValue('Start')
+    editor.value = 'First\nSecond'
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(
+        Array.from(document.querySelectorAll('.react-flow__node')).some((node) =>
+          node.textContent?.includes('First') && node.textContent?.includes('Second'),
+        ),
+      ).toBe(true)
+      expect(
+        screen
+          .getAllByRole('textbox')
+          .some((textbox) => textbox.value.includes('A["First<br/>Second"]')),
+      ).toBe(true)
+    })
+  })
+
+  it('commits after IME composition is confirmed with Enter', async () => {
+    loadTestDiagram()
+
+    render(<MermaidVisualEditor />)
+
+    const nodeLabel = await screen.findByText('Start')
+    fireEvent.doubleClick(nodeLabel)
+
+    const editor = await screen.findByDisplayValue('Start')
+    fireEvent.compositionStart(editor)
+    fireEvent.change(editor, { target: { value: 'New label' } })
+    fireEvent.keyDown(editor, {
+      key: 'Enter',
+      nativeEvent: { isComposing: true },
+    })
+    fireEvent.compositionEnd(editor)
+
+    await waitFor(() => {
+      expect(screen.getByText('New label')).toBeTruthy()
+      expect(
+        screen
+          .getAllByRole('textbox')
+          .some(
+            (textbox) =>
+              textbox.value.includes('A[New label]') &&
+              textbox.value.includes('B[End]'),
+          ),
+      ).toBe(true)
+    })
   })
 })

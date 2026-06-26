@@ -41,4 +41,12 @@ describe('parseMermaid', () => {
     expect(graph).toBeNull()
     expect(error).toContain('flowchart')
   })
+  it('converts Mermaid br markup in node labels to editable newlines', async () => {
+    const { graph, error } = await parseMermaid(
+      'graph TD\n  A["First<br/>Second"] --> B[End]',
+    )
+
+    expect(error).toBeNull()
+    expect(graph!.nodes.find((n) => n.id === 'A')!.label).toBe('First\nSecond')
+  })
 })

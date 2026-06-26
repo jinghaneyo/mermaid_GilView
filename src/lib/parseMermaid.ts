@@ -42,6 +42,10 @@ function normalizeDirection(raw: string | undefined): Direction {
   }
 }
 
+function normalizeLabelText(text: string): string {
+  return text.replace(/<br\s*\/?>/gi, '\n')
+}
+
 // Mermaid 11.4.1 internal types (confirmed via spike)
 interface DiagramVertex {
   id: string
@@ -112,7 +116,7 @@ export async function parseMermaid(
     const verticesMap = db.getVertices()
     const nodes: GraphNode[] = Array.from(verticesMap.values()).map((v) => ({
       id: v.id,
-      label: v.text !== undefined && v.text !== '' ? v.text : v.id,
+      label: v.text !== undefined && v.text !== '' ? normalizeLabelText(v.text) : v.id,
       shape: mapShape(v.type),
     }))
 
@@ -122,7 +126,9 @@ export async function parseMermaid(
       id: `${e.start}-${e.end}-${i}`,
       source: e.start,
       target: e.end,
-      ...(e.text !== undefined && e.text !== '' ? { label: e.text } : {}),
+      ...(e.text !== undefined && e.text !== ''
+        ? { label: normalizeLabelText(e.text) }
+        : {}),
     }))
 
     // getDirection() returns 'TD', 'LR', 'RL', 'BT' — normalizeDirection maps TD→TB

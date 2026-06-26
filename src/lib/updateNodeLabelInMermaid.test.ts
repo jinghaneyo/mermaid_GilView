@@ -38,4 +38,20 @@ describe('updateNodeLabelInMermaid', () => {
     expect(nextCode).toBe('flowchart TD\n  main["main() (진입점/설정파싱2)"]')
     await expect(convertMermaid(nextCode)).resolves.toMatchObject({ error: null })
   })
+
+  it('updates an existing quoted label containing shape syntax characters', async () => {
+    const code = 'flowchart TD\n  main["main() (진입점/설정파싱2)"] --> done[Done]'
+    const nextCode = updateNodeLabelInMermaid(code, 'main', 'updated')
+
+    expect(nextCode).toBe('flowchart TD\n  main[updated] --> done[Done]')
+    await expect(convertMermaid(nextCode)).resolves.toMatchObject({ error: null })
+  })
+
+  it('stores multiline labels as Mermaid br markup', async () => {
+    const code = 'flowchart TD\n  main[Old]'
+    const nextCode = updateNodeLabelInMermaid(code, 'main', 'First\nSecond')
+
+    expect(nextCode).toBe('flowchart TD\n  main["First<br/>Second"]')
+    await expect(convertMermaid(nextCode)).resolves.toMatchObject({ error: null })
+  })
 })

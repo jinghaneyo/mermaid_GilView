@@ -1,4 +1,5 @@
 import type { FlowNode, FlowEdge } from './types'
+import { formatMermaidLabel } from './updateNodeLabelInMermaid'
 
 /**
  * React Flow의 nodes/edges 데이터를 Mermaid 플로우차트 문자열로 변환한다.
@@ -18,7 +19,7 @@ export function convertCanvasToMermaid(
   for (const node of nodes ?? []) {
     const raw = node.data?.label
     const label = raw !== undefined && raw !== '' ? raw : node.id
-    lines.push(`  ${node.id}[${label}]`)
+    lines.push(`  ${node.id}[${formatMermaidLabel(label)}]`)
   }
 
   for (const edge of edges ?? []) {

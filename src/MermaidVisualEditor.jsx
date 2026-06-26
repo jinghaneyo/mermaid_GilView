@@ -136,7 +136,7 @@ function ShapeBody({ shape, label }) {
   const stroke = '#94a3b8' // slate-400 (양쪽 테마에서 모두 보임)
   // SVG 채움색: 라이트=흰색, 다크=slate-700
   const svgFill = 'text-white dark:text-slate-700'
-  const labelText = 'text-slate-800 dark:text-slate-100'
+  const labelText = 'whitespace-pre-line text-slate-800 dark:text-slate-100'
 
   if (shape === 'diamond') {
     return (
@@ -199,7 +199,7 @@ function ShapeBody({ shape, label }) {
   }
 
   const base =
-    'flex h-full w-full items-center justify-center border border-slate-400 bg-white px-3 text-center text-sm text-slate-800 shadow-sm dark:border-slate-400 dark:bg-slate-700 dark:text-slate-100'
+    'flex h-full w-full items-center justify-center whitespace-pre-line border border-slate-400 bg-white px-3 text-center text-sm text-slate-800 shadow-sm dark:border-slate-400 dark:bg-slate-700 dark:text-slate-100'
   if (shape === 'circle' || shape === 'doublecircle') {
     return (
       <div
@@ -229,6 +229,8 @@ function ShapeNode({ id, data, width }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(data.label ?? id)
   const textareaRef = useRef(null)
+  const isComposingRef = useRef(false)
+  const commitAfterCompositionRef = useRef(false)
 
   useEffect(() => {
     if (!editing) setValue(data.label ?? id)
@@ -248,8 +250,8 @@ function ShapeNode({ id, data, width }) {
     editor.style.height = `${editor.scrollHeight}px`
   }, [editing, value])
 
-  const commit = () => {
-    const next = value.trim() || id
+  const commit = (nextValue = value) => {
+    const next = nextValue.trim() || id
     setEditing(false)
     if (next !== data.label) onLabelChange(id, next)
   }
@@ -276,17 +278,39 @@ function ShapeNode({ id, data, width }) {
       <Handle type="target" position={Position.Top} className="!bg-slate-400" />
       <ShapeBody shape={data.shape || 'rect'} label={data.label} />
       {editing && (
-        <div className="absolute inset-x-0 top-1/2 z-10 flex -translate-y-1/2 items-center justify-center">
+        <div
+          className="absolute inset-x-0 top-1/2 z-10 flex -translate-y-1/2 items-center justify-center"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
           <textarea
             ref={textareaRef}
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            onBlur={commit}
+            onBlur={(e) => commit(e.currentTarget.value)}
+            onCompositionStart={() => {
+              isComposingRef.current = true
+            }}
+            onCompositionEnd={(e) => {
+              isComposingRef.current = false
+              if (commitAfterCompositionRef.current) {
+                commitAfterCompositionRef.current = false
+                commit(e.currentTarget.value)
+              }
+            }}
             onDoubleClick={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
+                if (isComposingRef.current || e.nativeEvent.isComposing) {
+                  commitAfterCompositionRef.current = true
+                  return
+                }
                 e.preventDefault()
-                commit()
+                commit(e.currentTarget.value)
               } else if (e.key === 'Escape') {
                 setValue(data.label ?? id)
                 setEditing(false)
