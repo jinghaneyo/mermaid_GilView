@@ -30,6 +30,24 @@ describe('MermaidVisualEditor: convertCanvasToMermaid (canvas -> code)', () => {
   })
 })
 
+describe('MermaidVisualEditor: custom node sizes', () => {
+  it('preserves custom node size comments when exporting canvas nodes', () => {
+    const nodes = [
+      {
+        id: 'main',
+        data: { label: 'Main', customSize: true },
+        position: { x: 0, y: 0 },
+        width: 260,
+        height: 120,
+      },
+    ]
+
+    expect(convertCanvasToMermaid(nodes, [])).toBe(
+      'graph TD\n%% gilview:node main width=260 height=120\n  main[Main]',
+    )
+  })
+})
+
 describe('MermaidVisualEditor: safe Mermaid labels', () => {
   it('quotes node labels that include Mermaid shape syntax characters', () => {
     const nodes = [

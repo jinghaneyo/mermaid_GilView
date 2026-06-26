@@ -42,13 +42,19 @@ export interface GroupBox {
   width: number
   height: number
   nodeIds: string[]
+  customSize?: boolean
 }
 
 // React Flow 호환 출력
 export interface FlowNode {
   id: string
   type?: string
-  data: { label: string; shape?: string }
+  data: {
+    label: string
+    shape?: string
+    customSize?: boolean
+    resizeSelected?: boolean
+  }
   position: { x: number; y: number }
   width?: number
   height?: number

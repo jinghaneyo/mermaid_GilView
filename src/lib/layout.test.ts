@@ -59,4 +59,18 @@ describe('layout text width options', () => {
 
     expect(nodes[0].width).toBeGreaterThan(160)
   })
+
+  it('uses persisted node size overrides when provided', () => {
+    const { nodes } = layout(
+      {
+        direction: 'TB',
+        nodes: [{ id: 'A', label: 'Resizable' }],
+        edges: [],
+      },
+      { nodeSizes: new Map([['A', { width: 280, height: 110 }]]) },
+    )
+
+    expect(nodes[0].width).toBe(280)
+    expect(nodes[0].height).toBe(110)
+  })
 })

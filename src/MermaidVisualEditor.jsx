@@ -7,6 +7,7 @@ import {
   Controls,
   MiniMap,
   Handle,
+  NodeResizer,
   Position,
   useNodesState,
   useEdgesState,
@@ -35,6 +36,11 @@ import {
   formatMermaidLabel,
   updateNodeLabelInMermaid,
 } from './lib/updateNodeLabelInMermaid'
+import {
+  formatNodeSizeComment,
+  updateSubgraphSizeInMermaid,
+  updateNodeSizeInMermaid,
+} from './lib/nodeSizeComments'
 
 /* ------------------------------------------------------------------ *
  * convertCanvasToMermaid: { nodes, edges } -> Mermaid 텍스트
@@ -50,6 +56,12 @@ export function convertCanvasToMermaid(nodes, edges) {
   for (const node of nodes ?? []) {
     const raw = node.data?.label
     const label = raw !== undefined && raw !== '' ? raw : node.id
+    if (node.data?.customSize && node.width && node.height) {
+      lines.push(formatNodeSizeComment(node.id, {
+        width: node.width,
+        height: node.height,
+      }))
+    }
     lines.push(`  ${node.id}[${formatMermaidLabel(label)}]`)
   }
 
@@ -90,9 +102,26 @@ const TEMPLATES = {
 }
 
 // subgraph 그룹 박스를 그리는 커스텀 노드 (멤버 노드 뒤에 깔리는 사각 박스 + 제목)
+const GroupSizeChangeContext = createContext(() => {})
+
 function GroupNode({ data }) {
+  const onGroupSizeChange = useContext(GroupSizeChangeContext)
+
   return (
-    <div className="h-full w-full rounded-lg border-2 border-amber-400/80 bg-amber-200/20">
+    <div className="relative h-full w-full rounded-lg border-2 border-amber-400/80 bg-amber-200/20">
+      <NodeResizer
+        isVisible={Boolean(data.resizeSelected)}
+        minWidth={120}
+        minHeight={80}
+        lineClassName="!border-amber-500"
+        handleClassName="!h-2.5 !w-2.5 !border-amber-600 !bg-white"
+        onResizeEnd={(_event, params) => {
+          onGroupSizeChange(data.groupId, {
+            width: params.width,
+            height: params.height,
+          })
+        }}
+      />
       <div className="px-2 pt-1 text-xs font-semibold text-amber-600">
         {data.label}
       </div>
@@ -192,9 +221,11 @@ function ShapeBody({ shape, label }) {
 
 // 커스텀 노드: 모양 본체 + 위/아래 연결 핸들
 const NodeLabelChangeContext = createContext(() => {})
+const NodeSizeChangeContext = createContext(() => {})
 
 function ShapeNode({ id, data, width }) {
   const onLabelChange = useContext(NodeLabelChangeContext)
+  const onSizeChange = useContext(NodeSizeChangeContext)
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(data.label ?? id)
   const textareaRef = useRef(null)
@@ -232,6 +263,16 @@ function ShapeNode({ id, data, width }) {
         setEditing(true)
       }}
     >
+      <NodeResizer
+        isVisible={Boolean(data.resizeSelected) && !editing}
+        minWidth={60}
+        minHeight={36}
+        lineClassName="!border-blue-500"
+        handleClassName="!h-2.5 !w-2.5 !border-blue-600 !bg-white"
+        onResizeEnd={(_event, params) => {
+          onSizeChange(id, { width: params.width, height: params.height })
+        }}
+      />
       <Handle type="target" position={Position.Top} className="!bg-slate-400" />
       <ShapeBody shape={data.shape || 'rect'} label={data.label} />
       {editing && (
@@ -327,7 +368,7 @@ function EditorInner({
         id: `__group_${g.id}`,
         type: 'group',
         position: g.position,
-        data: { label: g.label },
+        data: { label: g.label, groupId: g.id, customSize: Boolean(g.customSize) },
         style: { width: g.width, height: g.height },
         zIndex: 0,
       }))
@@ -405,12 +446,65 @@ function EditorInner({
     runParse(nextCode)
   }
 
+  const handleNodeSizeChange = (id, size) => {
+    const nextCode = updateNodeSizeInMermaid(code, id, size)
+    const width = Math.round(size.width)
+    const height = Math.round(size.height)
+
+    setNodes((currentNodes) =>
+      currentNodes.map((node) =>
+        node.id === id
+          ? {
+              ...node,
+              width,
+              height,
+              data: { ...node.data, customSize: true },
+            }
+          : node,
+      ),
+    )
+    setCode(nextCode)
+  }
+
+  const handleGroupSizeChange = (groupId, size) => {
+    const nextCode = updateSubgraphSizeInMermaid(code, groupId, size)
+    const width = Math.round(size.width)
+    const height = Math.round(size.height)
+    const reactFlowId = `__group_${groupId}`
+
+    setNodes((currentNodes) =>
+      currentNodes.map((node) =>
+        node.id === reactFlowId
+          ? {
+              ...node,
+              width,
+              height,
+              style: { ...node.style, width, height },
+              data: { ...node.data, customSize: true },
+            }
+          : node,
+      ),
+    )
+    setCode(nextCode)
+  }
+
   const handleCodeScroll = (e) => {
     setCodeScrollTop(e.currentTarget.scrollTop)
   }
 
   const handleCanvasNodeClick = (_event, node) => {
+    setNodes((currentNodes) =>
+      currentNodes.map((currentNode) => ({
+        ...currentNode,
+        data: {
+          ...currentNode.data,
+          resizeSelected: currentNode.id === node.id,
+        },
+      })),
+    )
+
     if (node.type === 'group') return
+
     const location = findNodeLocationInMermaid(code, node.id, node.data?.label)
     const textarea = codeTextareaRef.current
     if (!location || !textarea) return
@@ -442,6 +536,15 @@ function EditorInner({
       setHighlightedCodeLine(null)
       codeHighlightTimerRef.current = null
     }, 1800)
+  }
+
+  const handlePaneClick = () => {
+    setNodes((currentNodes) =>
+      currentNodes.map((node) => ({
+        ...node,
+        data: { ...node.data, resizeSelected: false },
+      })),
+    )
   }
 
   // 새 화살표 연결 -> 엣지 추가 후 코드 갱신
@@ -743,30 +846,35 @@ function EditorInner({
         </div>
 
         <NodeLabelChangeContext.Provider value={handleNodeLabelChange}>
-          <ReactFlow
-            colorMode={theme}
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onNodeClick={handleCanvasNodeClick}
-            onNodeDragStop={onNodeDragStop}
-            fitView
-            fitViewOptions={{ padding: 0.2 }}
-            proOptions={{ hideAttribution: true }}
-          >
-            {showGrid && (
-              <Background
-                variant={BackgroundVariant.Lines}
-                gap={20}
-                color={theme === 'dark' ? '#334155' : '#e2e8f0'}
-              />
-            )}
-            <Controls showInteractive={false} />
-            <MiniMap pannable zoomable />
-          </ReactFlow>
+          <NodeSizeChangeContext.Provider value={handleNodeSizeChange}>
+            <GroupSizeChangeContext.Provider value={handleGroupSizeChange}>
+              <ReactFlow
+                colorMode={theme}
+                nodes={nodes}
+                edges={edges}
+                nodeTypes={nodeTypes}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onConnect={onConnect}
+                onNodeClick={handleCanvasNodeClick}
+                onPaneClick={handlePaneClick}
+                onNodeDragStop={onNodeDragStop}
+                fitView
+                fitViewOptions={{ padding: 0.2 }}
+                proOptions={{ hideAttribution: true }}
+              >
+                {showGrid && (
+                  <Background
+                    variant={BackgroundVariant.Lines}
+                    gap={20}
+                    color={theme === 'dark' ? '#334155' : '#e2e8f0'}
+                  />
+                )}
+                <Controls showInteractive={false} />
+                <MiniMap pannable zoomable />
+              </ReactFlow>
+            </GroupSizeChangeContext.Provider>
+          </NodeSizeChangeContext.Provider>
         </NodeLabelChangeContext.Provider>
       </div>
     </div>

@@ -33,4 +33,24 @@ describe('convertMermaid', () => {
     expect(res.nodes).toEqual([])
     expect(res.edges).toEqual([])
   })
+  it('applies gilview node size comments to converted nodes', async () => {
+    const res = await convertMermaid(
+      'graph TD\n%% gilview:node A width=260 height=120\n  A[Start]',
+    )
+
+    expect(res.error).toBeNull()
+    expect(res.nodes[0].width).toBe(260)
+    expect(res.nodes[0].height).toBe(120)
+  })
+
+  it('applies gilview subgraph size comments to converted groups', async () => {
+    const res = await convertMermaid(
+      'graph TD\n%% gilview:subgraph Boot width=500 height=280\nsubgraph Boot\n  A[Start]\nend',
+    )
+
+    expect(res.error).toBeNull()
+    expect(res.groups![0].width).toBe(500)
+    expect(res.groups![0].height).toBe(280)
+    expect(res.groups![0].customSize).toBe(true)
+  })
 })

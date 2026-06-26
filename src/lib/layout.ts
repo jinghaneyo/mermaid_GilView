@@ -1,11 +1,13 @@
 import dagre from '@dagrejs/dagre'
 import type { ParsedGraph, FlowGraph, FlowNode, FlowEdge } from './types'
+import type { NodeSize } from './nodeSizeComments'
 
 export const NODE_WIDTH = 160
 export const NODE_HEIGHT = 44
 
 export interface LayoutOptions {
   fitNodeWidthToText?: boolean
+  nodeSizes?: Map<string, NodeSize>
 }
 
 const TEXT_HORIZONTAL_PAD = 48
@@ -34,7 +36,13 @@ function sizeForShape(
   shape: string | undefined,
   label = '',
   options: LayoutOptions = {},
+  id?: string,
 ): { w: number; h: number } {
+  const persistedSize = id ? options.nodeSizes?.get(id) : undefined
+  if (persistedSize) {
+    return { w: persistedSize.width, h: persistedSize.height }
+  }
+
   let size: { w: number; h: number }
   switch (shape) {
     case 'diamond':
@@ -64,7 +72,7 @@ export function layout(graph: ParsedGraph, options: LayoutOptions = {}): FlowGra
   g.setDefaultEdgeLabel(() => ({}))
 
   graph.nodes.forEach((n) => {
-    const { w, h } = sizeForShape(n.shape, n.label, options)
+    const { w, h } = sizeForShape(n.shape, n.label, options, n.id)
     g.setNode(n.id, { width: w, height: h })
   })
   graph.edges.forEach((e) => {
@@ -76,11 +84,12 @@ export function layout(graph: ParsedGraph, options: LayoutOptions = {}): FlowGra
 
   const nodes: FlowNode[] = graph.nodes.map((n) => {
     const pos = g.node(n.id)
-    const { w, h } = sizeForShape(n.shape, n.label, options)
+    const { w, h } = sizeForShape(n.shape, n.label, options, n.id)
+    const customSize = Boolean(options.nodeSizes?.has(n.id))
     return {
       id: n.id,
       type: 'shape',
-      data: { label: n.label, shape: n.shape ?? 'rect' },
+      data: { label: n.label, shape: n.shape ?? 'rect', customSize },
       // dagre는 중심 좌표를 주므로 React Flow의 좌상단 좌표로 변환
       position: { x: pos.x - w / 2, y: pos.y - h / 2 },
       width: w,
