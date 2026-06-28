@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addNodeToMermaid } from './updateNodesInMermaid'
+import { addNodeToMermaid, addNodeToMermaidWithId } from './updateNodesInMermaid'
 
 describe('updateNodesInMermaid', () => {
   it('adds a rectangle node after the flowchart header', () => {
@@ -38,5 +38,57 @@ describe('updateNodesInMermaid', () => {
     expect(addNodeToMermaid(code, { shape: 'rect', label: 'main()' })).toBe(
       'graph TD\n  N1["main()"]',
     )
+  })
+
+  it('returns the generated node id with the updated Mermaid code', () => {
+    const code = 'graph TD\n  N1[One]'
+
+    expect(addNodeToMermaidWithId(code, { shape: 'rect', label: 'Next' })).toEqual({
+      id: 'N2',
+      code: 'graph TD\n  N2[Next]\n  N1[One]',
+    })
+  })
+
+  it('inserts a new node below the anchor node line when an anchor is provided', () => {
+    const code = 'graph TD\n  A[Start]\n  B[End]'
+
+    expect(
+      addNodeToMermaidWithId(code, {
+        shape: 'rect',
+        label: 'Next',
+        anchorNodeId: 'A',
+      }),
+    ).toEqual({
+      id: 'N1',
+      code: 'graph TD\n  A[Start]\n  N1[Next]\n  B[End]',
+    })
+  })
+
+  it('uses the same indentation depth as the anchor node line', () => {
+    const code = [
+      'graph TD',
+      '  subgraph COORD["Coordinator"]',
+      '    SNAP["kalman.SnapshotAll()<br/>(predicted 상태)"]',
+      '    FUSE["jpda.Fuse()"]',
+      '  end',
+    ].join('\n')
+
+    expect(
+      addNodeToMermaidWithId(code, {
+        shape: 'rect',
+        label: '새 노드',
+        anchorNodeId: 'SNAP',
+      }),
+    ).toEqual({
+      id: 'N1',
+      code: [
+        'graph TD',
+        '  subgraph COORD["Coordinator"]',
+        '    SNAP["kalman.SnapshotAll()<br/>(predicted 상태)"]',
+        '    N1[새 노드]',
+        '    FUSE["jpda.Fuse()"]',
+        '  end',
+      ].join('\n'),
+    })
   })
 })

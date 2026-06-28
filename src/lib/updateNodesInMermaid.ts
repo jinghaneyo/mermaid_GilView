@@ -11,9 +11,17 @@ export type AddNodeShape =
 export interface AddNodeOptions {
   shape: AddNodeShape
   label: string
+  anchorNodeId?: string
 }
 
 export function addNodeToMermaid(code: string, options: AddNodeOptions): string {
+  return addNodeToMermaidWithId(code, options).code
+}
+
+export function addNodeToMermaidWithId(
+  code: string,
+  options: AddNodeOptions,
+): { code: string; id: string } {
   const lines = code.split(/\r?\n/)
   const headerIndex = lines.findIndex((line) =>
     /^\s*(?:graph|flowchart)\s+(?:TB|TD|BT|LR|RL)\b/i.test(line),
@@ -21,10 +29,18 @@ export function addNodeToMermaid(code: string, options: AddNodeOptions): string 
   const id = nextNodeId(code)
   const declaration = `  ${formatNodeDeclaration(id, options.shape, options.label)}`
 
-  if (headerIndex < 0) return `${declaration}\n${code}`
+  const anchorIndex = options.anchorNodeId
+    ? findNodeLineIndex(lines, options.anchorNodeId)
+    : -1
+  if (anchorIndex >= 0) {
+    lines.splice(anchorIndex + 1, 0, withLineIndent(declaration, lines[anchorIndex]))
+    return { id, code: lines.join('\n') }
+  }
+
+  if (headerIndex < 0) return { id, code: `${declaration}\n${code}` }
 
   lines.splice(headerIndex + 1, 0, declaration)
-  return lines.join('\n')
+  return { id, code: lines.join('\n') }
 }
 
 function nextNodeId(code: string): string {
@@ -68,4 +84,24 @@ function formatNodeDeclaration(
 
 function stripQuotedText(line: string): string {
   return line.replace(/"([^"\\]|\\.)*"/g, '""')
+}
+
+function withLineIndent(declaration: string, anchorLine: string): string {
+  const indent = anchorLine.match(/^\s*/)?.[0] ?? ''
+  return `${indent}${declaration.trimStart()}`
+}
+
+function findNodeLineIndex(lines: string[], id: string): number {
+  const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const declarationPattern = new RegExp(
+    `(^|[^A-Za-z0-9_])${escapedId}(\\(\\[|\\[\\(|\\(\\(|\\[|\\{|\\()`,
+  )
+  const bareIdPattern = new RegExp(`(^|[^A-Za-z0-9_])${escapedId}([^A-Za-z0-9_]|$)`)
+
+  const declarationIndex = lines.findIndex((line) =>
+    declarationPattern.test(stripQuotedText(line)),
+  )
+  if (declarationIndex >= 0) return declarationIndex
+
+  return lines.findIndex((line) => bareIdPattern.test(stripQuotedText(line)))
 }

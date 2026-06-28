@@ -52,7 +52,8 @@ import {
   removeSelectionFromMermaid,
   updateEdgeLabelInMermaid,
 } from './lib/updateEdgesInMermaid'
-import { addNodeToMermaid } from './lib/updateNodesInMermaid'
+import { addNodeToMermaidWithId } from './lib/updateNodesInMermaid'
+import { placeAddedNodeNearAnchor } from './lib/placeAddedNode'
 import EditableEdge, { EdgeLabelChangeContext } from './components/EditableEdge'
 
 /* ------------------------------------------------------------------ *
@@ -393,6 +394,19 @@ function getRenderedDiagramBounds(viewport) {
   )
 }
 
+function directionFromMermaid(code) {
+  const match = code.match(/^\s*(?:graph|flowchart)\s+(TB|TD|BT|LR|RL)\b/im)
+  if (!match) return 'TB'
+  return match[1].toUpperCase() === 'TD' ? 'TB' : match[1].toUpperCase()
+}
+
+function nodeRectForPlacement(node, allNodes) {
+  const position = getAbsoluteNodePosition(node, allNodes)
+  const width = Number(node.width ?? node.style?.width ?? 160)
+  const height = Number(node.height ?? node.style?.height ?? 44)
+  return { x: position.x, y: position.y, width, height }
+}
+
 function EditorInner({
   initialCode,
   onCodeChange,
@@ -422,6 +436,8 @@ function EditorInner({
   const codeTextareaRef = useRef(null)
   const codeHighlightTimerRef = useRef(null)
   const reactFlow = useReactFlow()
+  const lastFocusedNodeIdRef = useRef(null)
+  const pendingAddedNodePlacementRef = useRef(null)
 
   // 핸들러에서 최신 상태를 읽기 위한 ref 미러
   const nodesRef = useRef(nodes)
@@ -487,7 +503,32 @@ function EditorInner({
         return styled
       })
 
-      setNodes([...groupNodes, ...flowNodes])
+      const nextNodes = [...groupNodes, ...flowNodes]
+      const pendingPlacement = pendingAddedNodePlacementRef.current
+      if (pendingPlacement) {
+        const addedNode = nextNodes.find((node) => node.id === pendingPlacement.id)
+        if (addedNode) {
+          const width = Number(addedNode.width ?? addedNode.style?.width ?? 160)
+          const height = Number(addedNode.height ?? addedNode.style?.height ?? 44)
+          const position = placeAddedNodeNearAnchor({
+            direction: pendingPlacement.direction,
+            anchor: pendingPlacement.anchor,
+            added: { width, height },
+          })
+          addedNode.position = position
+          addedNode.data = { ...addedNode.data, resizeSelected: true }
+          lastFocusedNodeIdRef.current = addedNode.id
+        }
+        pendingAddedNodePlacementRef.current = null
+      }
+
+      setNodes(
+        nextNodes.map((node) =>
+          pendingPlacement && node.id !== pendingPlacement.id
+            ? { ...node, data: { ...node.data, resizeSelected: false } }
+            : node,
+        ),
+      )
       setEdges(
         res.edges.map((edge) => ({
           ...edge,
@@ -599,6 +640,7 @@ function EditorInner({
   const focusDiagramNode = (id) => {
     const targetNode = nodesRef.current.find((node) => node.id === id)
     if (!targetNode) return
+    lastFocusedNodeIdRef.current = id
 
     setNodes((currentNodes) =>
       currentNodes.map((currentNode) => ({
@@ -634,6 +676,7 @@ function EditorInner({
   }
 
   const handleCanvasNodeClick = (_event, node) => {
+    lastFocusedNodeIdRef.current = node.id
     setNodes((currentNodes) =>
       currentNodes.map((currentNode) => ({
         ...currentNode,
@@ -704,12 +747,23 @@ function EditorInner({
   }
 
   const handleAddNode = () => {
-    const nextCode = addNodeToMermaid(code, {
+    const anchorNode = nodesRef.current.find(
+      (node) => node.id === lastFocusedNodeIdRef.current,
+    )
+    const result = addNodeToMermaidWithId(code, {
       shape: addNodeShape,
       label: '새 노드',
+      ...(anchorNode?.type !== 'group' ? { anchorNodeId: anchorNode?.id } : {}),
     })
-    setCode(nextCode)
-    runParse(nextCode)
+    if (anchorNode) {
+      pendingAddedNodePlacementRef.current = {
+        id: result.id,
+        direction: directionFromMermaid(code),
+        anchor: nodeRectForPlacement(anchorNode, nodesRef.current),
+      }
+    }
+    setCode(result.code)
+    runParse(result.code)
   }
 
   const onDelete = ({ nodes: deletedNodes, edges: deletedEdges }) => {
