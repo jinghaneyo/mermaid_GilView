@@ -21,6 +21,32 @@ html, body, #root {
   stroke: #94a3b8;
 }
 
+.edge-label-hitbox {
+  fill: transparent;
+  stroke: transparent;
+}
+
+.edge-label-text {
+  fill: #0f172a;
+  paint-order: stroke;
+  stroke: rgb(255 255 255 / 0.82);
+  stroke-linejoin: round;
+  stroke-width: 3px;
+}
+
+.edge-label-placeholder {
+  opacity: 0.65;
+}
+
+.react-flow.dark .edge-label-text {
+  fill: #f8fafc;
+  stroke: rgb(15 23 42 / 0.78);
+}
+
+.react-flow.dark .edge-label-placeholder {
+  opacity: 0.72;
+}
+
 @keyframes code-line-flash {
   0%, 100% {
     opacity: 0;

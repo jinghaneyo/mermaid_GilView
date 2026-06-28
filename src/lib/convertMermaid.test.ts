@@ -53,4 +53,21 @@ describe('convertMermaid', () => {
     expect(res.groups![0].height).toBe(280)
     expect(res.groups![0].customSize).toBe(true)
   })
+
+  it('keeps subgraph boxes compact when members connect through external nodes', async () => {
+    const res = await convertMermaid(
+      [
+        'flowchart TB',
+        '  subgraph G["Grouped work"]',
+        '    A[First member]',
+        '    B[Second member]',
+        '  end',
+        '  A --> X1[External 1] --> X2[External 2] --> B',
+      ].join('\n'),
+    )
+
+    expect(res.error).toBeNull()
+    const group = res.groups![0]
+    expect(group.height).toBeLessThan(220)
+  })
 })

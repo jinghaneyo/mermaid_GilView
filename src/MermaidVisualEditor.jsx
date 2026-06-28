@@ -12,7 +12,6 @@ import {
   useNodesState,
   useEdgesState,
   useReactFlow,
-  addEdge,
   getViewportForBounds,
 } from '@xyflow/react'
 import { toPng, toSvg } from 'html-to-image'
@@ -31,7 +30,11 @@ function triggerDownload(url, filename) {
 import { convertMermaid } from './lib/convertMermaid'
 import { scrollTopForLine } from './lib/codeEditorScroll'
 import { estimateLabelEditorRows } from './lib/labelEditorSizing'
-import { findNodeLocationInMermaid } from './lib/findNodeLineInMermaid'
+import {
+  findMermaidElementAtOffset,
+  findNodeLocationInMermaid,
+  findSubgraphLocationInMermaid,
+} from './lib/findNodeLineInMermaid'
 import {
   formatMermaidLabel,
   updateNodeLabelInMermaid,
@@ -41,6 +44,13 @@ import {
   updateSubgraphSizeInMermaid,
   updateNodeSizeInMermaid,
 } from './lib/nodeSizeComments'
+import {
+  addEdgeToMermaid,
+  removeSelectionFromMermaid,
+  updateEdgeLabelInMermaid,
+} from './lib/updateEdgesInMermaid'
+import { addNodeToMermaid } from './lib/updateNodesInMermaid'
+import EditableEdge, { EdgeLabelChangeContext } from './components/EditableEdge'
 
 /* ------------------------------------------------------------------ *
  * convertCanvasToMermaid: { nodes, edges } -> Mermaid 텍스트
@@ -327,6 +337,30 @@ function ShapeNode({ id, data, width }) {
 }
 
 const nodeTypes = { group: GroupNode, shape: ShapeNode }
+const edgeTypes = { editable: EditableEdge }
+const ADD_NODE_SHAPES = [
+  { key: 'rect', label: '사각형 노드', icon: '□' },
+  { key: 'diamond', label: '마름모 노드', icon: '◇' },
+  { key: 'cylinder', label: '원통 노드', icon: '▭' },
+  { key: 'stadium', label: '스타디움 노드', icon: '⬭' },
+  { key: 'round', label: '둥근 노드', icon: '▢' },
+  { key: 'circle', label: '원 노드', icon: '○' },
+]
+
+function getAbsoluteNodePosition(node, allNodes) {
+  const byId = new Map(allNodes.map((currentNode) => [currentNode.id, currentNode]))
+  let x = node.position?.x ?? 0
+  let y = node.position?.y ?? 0
+  let parent = node.parentId ? byId.get(node.parentId) : null
+
+  while (parent) {
+    x += parent.position?.x ?? 0
+    y += parent.position?.y ?? 0
+    parent = parent.parentId ? byId.get(parent.parentId) : null
+  }
+
+  return { x, y }
+}
 
 function EditorInner({
   initialCode,
@@ -346,6 +380,7 @@ function EditorInner({
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
   const [highlightedCodeLine, setHighlightedCodeLine] = useState(null)
   const [codeScrollTop, setCodeScrollTop] = useState(0)
+  const [addNodeShape, setAddNodeShape] = useState('rect')
   const [codeLineMetrics, setCodeLineMetrics] = useState({
     lineHeight: 22,
     paddingTop: 16,
@@ -422,7 +457,13 @@ function EditorInner({
       })
 
       setNodes([...groupNodes, ...flowNodes])
-      setEdges(res.edges)
+      setEdges(
+        res.edges.map((edge) => ({
+          ...edge,
+          type: 'editable',
+          data: { label: edge.label ?? '' },
+        })),
+      )
     })
   }
 
@@ -459,13 +500,21 @@ function EditorInner({
 
   // Canvas -> Code : 현재 노드/선을 Mermaid 코드로 변환해 Textarea 갱신
   // (그룹 박스 노드는 실제 노드가 아니므로 코드 변환에서 제외)
-  const syncCanvasToCode = (nextNodes, nextEdges) => {
-    const realNodes = nextNodes.filter((n) => n.type !== 'group')
-    setCode(convertCanvasToMermaid(realNodes, nextEdges))
-  }
-
   const handleNodeLabelChange = (id, label) => {
     const nextCode = updateNodeLabelInMermaid(code, id, label)
+    setCode(nextCode)
+    runParse(nextCode)
+  }
+
+  const handleEdgeLabelChange = (id, label) => {
+    const edge = edgesRef.current.find((currentEdge) => currentEdge.id === id)
+    if (!edge) return
+
+    const nextCode = updateEdgeLabelInMermaid(code, {
+      source: edge.source,
+      target: edge.target,
+      label,
+    })
     setCode(nextCode)
     runParse(nextCode)
   }
@@ -516,6 +565,43 @@ function EditorInner({
     setCodeScrollTop(e.currentTarget.scrollTop)
   }
 
+  const focusDiagramNode = (id) => {
+    const targetNode = nodesRef.current.find((node) => node.id === id)
+    if (!targetNode) return
+
+    setNodes((currentNodes) =>
+      currentNodes.map((currentNode) => ({
+        ...currentNode,
+        data: {
+          ...currentNode.data,
+          resizeSelected: currentNode.id === id,
+        },
+      })),
+    )
+
+    const position = getAbsoluteNodePosition(targetNode, nodesRef.current)
+    const width = Number(targetNode.width ?? targetNode.style?.width ?? 0)
+    const height = Number(targetNode.height ?? targetNode.style?.height ?? 0)
+    reactFlow.setCenter(position.x + width / 2, position.y + height / 2, {
+      zoom: 1.2,
+      duration: 350,
+    })
+  }
+
+  const handleCodeClick = (e) => {
+    const target = findMermaidElementAtOffset(
+      code,
+      e.currentTarget.selectionStart,
+      nodesRef.current.map((node) => ({
+        id: node.id,
+        type: node.type === 'group' ? 'group' : 'node',
+        groupId: node.data?.groupId,
+        label: node.data?.label,
+      })),
+    )
+    if (target) focusDiagramNode(target.id)
+  }
+
   const handleCanvasNodeClick = (_event, node) => {
     setNodes((currentNodes) =>
       currentNodes.map((currentNode) => ({
@@ -527,9 +613,14 @@ function EditorInner({
       })),
     )
 
-    if (node.type === 'group') return
-
-    const location = findNodeLocationInMermaid(code, node.id, node.data?.label)
+    const location =
+      node.type === 'group'
+        ? findSubgraphLocationInMermaid(
+            code,
+            node.data?.groupId ?? node.id.replace(/^__group_/, ''),
+            node.data?.label,
+          )
+        : findNodeLocationInMermaid(code, node.id, node.data?.label)
     const textarea = codeTextareaRef.current
     if (!location || !textarea) return
 
@@ -573,20 +664,44 @@ function EditorInner({
 
   // 새 화살표 연결 -> 엣지 추가 후 코드 갱신
   const onConnect = (params) => {
-    setEdges((eds) => {
-      const nextEdges = addEdge(params, eds)
-      syncCanvasToCode(nodesRef.current, nextEdges)
-      return nextEdges
+    const nextCode = addEdgeToMermaid(code, {
+      source: params.source,
+      target: params.target,
     })
+    setCode(nextCode)
+    runParse(nextCode)
+  }
+
+  const handleAddNode = () => {
+    const nextCode = addNodeToMermaid(code, {
+      shape: addNodeShape,
+      label: '새 노드',
+    })
+    setCode(nextCode)
+    runParse(nextCode)
+  }
+
+  const onDelete = ({ nodes: deletedNodes, edges: deletedEdges }) => {
+    const nextCode = removeSelectionFromMermaid(code, {
+      nodes: deletedNodes
+        .filter((node) => node.type !== 'group')
+        .map((node) => node.id),
+      edges: deletedEdges.map((edge) => ({
+        source: edge.source,
+        target: edge.target,
+      })),
+    })
+
+    if (nextCode === code) return
+    setCode(nextCode)
+    runParse(nextCode)
   }
 
   // 노드 드래그 종료 -> 코드 갱신
   // 단, subgraph(그룹)가 있으면 코드 역생성이 subgraph를 평탄화하므로 생략
   // (노드 위치는 Mermaid 문법에 없어 드래그만으로 코드가 바뀔 이유도 없음)
   const onNodeDragStop = () => {
-    const hasGroups = nodesRef.current.some((n) => n.type === 'group')
-    if (hasGroups) return
-    syncCanvasToCode(nodesRef.current, edgesRef.current)
+    // Mermaid flowchart syntax does not persist freeform canvas positions.
   }
 
   // 스플리터 드래그 -> 왼쪽 패널 너비 조절
@@ -727,6 +842,10 @@ function EditorInner({
 
   const btnClass =
     'rounded-md border border-slate-300 bg-white/90 px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm hover:bg-white'
+  const shapeBtnClass = (shape) =>
+    shape === addNodeShape
+      ? 'flex h-8 w-8 items-center justify-center rounded-md border border-blue-500 bg-blue-50 text-sm font-semibold text-blue-700 shadow-sm ring-2 ring-blue-500'
+      : 'flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-white/90 text-sm font-semibold text-slate-700 shadow-sm hover:bg-white'
 
   return (
     <div ref={containerRef} className="flex h-full w-full">
@@ -785,6 +904,7 @@ function EditorInner({
           ref={codeTextareaRef}
           value={code}
           onChange={handleCodeChange}
+          onClick={handleCodeClick}
           onKeyDown={onCodeKeyDown}
           onScroll={handleCodeScroll}
           spellCheck={false}
@@ -826,6 +946,30 @@ function EditorInner({
       <div
         className={`relative flex-1 ${theme === 'dark' ? 'bg-slate-900' : 'bg-slate-50'}`}
       >
+        <div className="absolute left-3 top-3 z-10 flex flex-wrap items-center gap-1 rounded-md border border-slate-300 bg-white/90 p-1 shadow-sm">
+          {ADD_NODE_SHAPES.map((shape) => (
+            <button
+              key={shape.key}
+              type="button"
+              aria-label={shape.label}
+              title={shape.label}
+              aria-pressed={addNodeShape === shape.key}
+              onClick={() => setAddNodeShape(shape.key)}
+              className={shapeBtnClass(shape.key)}
+            >
+              {shape.icon}
+            </button>
+          ))}
+          <button
+            type="button"
+            aria-label="노드 추가"
+            onClick={handleAddNode}
+            className={btnClass}
+          >
+            + 노드 추가
+          </button>
+        </div>
+
         {/* 툴바: 내보내기 / 테마 / 격자 토글 */}
         <div className="absolute right-3 top-3 z-10 flex flex-wrap justify-end gap-2">
           <button type="button" onClick={() => exportImage('png')} className={btnClass}>
@@ -872,17 +1016,21 @@ function EditorInner({
         <NodeLabelChangeContext.Provider value={handleNodeLabelChange}>
           <NodeSizeChangeContext.Provider value={handleNodeSizeChange}>
             <GroupSizeChangeContext.Provider value={handleGroupSizeChange}>
+              <EdgeLabelChangeContext.Provider value={handleEdgeLabelChange}>
               <ReactFlow
                 colorMode={theme}
                 nodes={nodes}
                 edges={edges}
                 nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
+                onDelete={onDelete}
                 onNodeClick={handleCanvasNodeClick}
                 onPaneClick={handlePaneClick}
                 onNodeDragStop={onNodeDragStop}
+                deleteKeyCode={['Backspace', 'Delete']}
                 fitView
                 fitViewOptions={{ padding: 0.2 }}
                 proOptions={{ hideAttribution: true }}
@@ -897,6 +1045,7 @@ function EditorInner({
                 <Controls showInteractive={false} />
                 <MiniMap pannable zoomable />
               </ReactFlow>
+              </EdgeLabelChangeContext.Provider>
             </GroupSizeChangeContext.Provider>
           </NodeSizeChangeContext.Provider>
         </NodeLabelChangeContext.Provider>

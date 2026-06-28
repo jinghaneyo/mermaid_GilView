@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  findMermaidElementAtOffset,
   findNodeLineInMermaid,
   findNodeLocationInMermaid,
+  findSubgraphLocationInMermaid,
 } from './findNodeLineInMermaid'
 
 describe('findNodeLineInMermaid', () => {
@@ -57,5 +59,51 @@ describe('findNodeLineInMermaid', () => {
       start: 43,
       end: 71,
     })
+  })
+})
+
+describe('findSubgraphLocationInMermaid', () => {
+  it('finds the line containing a subgraph declaration', () => {
+    const code = 'flowchart TD\n  subgraph Cluster\n    A[Start]\n  end'
+
+    expect(findSubgraphLocationInMermaid(code, 'Cluster', 'Cluster')).toEqual({
+      line: 1,
+      start: 13,
+      end: 31,
+    })
+  })
+
+  it('finds a subgraph declaration by title when id and title differ', () => {
+    const code = 'flowchart TD\n  subgraph sg1 [Display title]\n    A[Start]\n  end'
+
+    expect(findSubgraphLocationInMermaid(code, 'sg1', 'Display title')).toEqual({
+      line: 1,
+      start: 13,
+      end: 43,
+    })
+  })
+})
+
+describe('findMermaidElementAtOffset', () => {
+  it('finds the node segment containing the clicked code position', () => {
+    const code = 'flowchart TD\n  A[Start] --> B[End]'
+
+    expect(
+      findMermaidElementAtOffset(code, code.indexOf('End'), [
+        { id: 'A', type: 'node', label: 'Start' },
+        { id: 'B', type: 'node', label: 'End' },
+      ]),
+    ).toEqual({ id: 'B', type: 'node' })
+  })
+
+  it('finds a subgraph when the clicked code position is on its declaration', () => {
+    const code = 'flowchart TD\n  subgraph Cluster\n    A[Start]\n  end'
+
+    expect(
+      findMermaidElementAtOffset(code, code.indexOf('Cluster'), [
+        { id: '__group_Cluster', type: 'group', groupId: 'Cluster', label: 'Cluster' },
+        { id: 'A', type: 'node', label: 'Start' },
+      ]),
+    ).toEqual({ id: '__group_Cluster', type: 'group' })
   })
 })

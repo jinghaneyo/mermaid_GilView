@@ -202,4 +202,57 @@ describe('MermaidVisualEditor: node label editing', () => {
       ).toBe(true)
     })
   })
+
+  it('adds a node with the selected shape from the canvas toolbar', async () => {
+    loadTestDiagram('graph TD\n  A[Start]')
+    render(<MermaidVisualEditor />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '마름모 노드' }))
+    fireEvent.click(screen.getByRole('button', { name: '노드 추가' }))
+
+    await waitFor(() => {
+      expect(
+        screen
+          .getAllByRole('textbox')
+          .some((textbox) => textbox.value.includes('N1{새 노드}')),
+      ).toBe(true)
+    })
+  })
+
+  it('selects and highlights the subgraph declaration when a subgraph is clicked', async () => {
+    const code = 'graph TD\n  subgraph Cluster\n    A[Start]\n  end'
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    fireEvent.click(await screen.findByText('Cluster'))
+
+    await waitFor(() => {
+      const editor = screen
+        .getAllByRole('textbox')
+        .find((textbox) => textbox.value === code)
+      expect(editor.selectionStart).toBe(code.indexOf('  subgraph Cluster'))
+      expect(editor.selectionEnd).toBe(
+        code.indexOf('  subgraph Cluster') + '  subgraph Cluster'.length,
+      )
+      expect(document.querySelector('.code-line-flash')).toBeTruthy()
+    })
+  })
+
+  it('selects the diagram node when its Mermaid code is clicked', async () => {
+    const code = 'graph TD\n  A[Start] --> B[End]'
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    const nodeLabel = await screen.findByText('End')
+    const editor = screen
+      .getAllByRole('textbox')
+      .find((textbox) => textbox.value === code)
+    editor.setSelectionRange(code.indexOf('End'), code.indexOf('End'))
+    fireEvent.click(editor)
+
+    await waitFor(() => {
+      const node = nodeLabel.closest('.react-flow__node')
+      expect(node.querySelector('.react-flow__resize-control')).toBeTruthy()
+    })
+  })
 })
