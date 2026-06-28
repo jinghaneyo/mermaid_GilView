@@ -12,7 +12,6 @@ import {
   useNodesState,
   useEdgesState,
   useReactFlow,
-  getViewportForBounds,
 } from '@xyflow/react'
 import { toPng, toSvg } from 'html-to-image'
 import '@xyflow/react/dist/style.css'
@@ -35,6 +34,10 @@ import {
   findNodeLocationInMermaid,
   findSubgraphLocationInMermaid,
 } from './lib/findNodeLineInMermaid'
+import {
+  getFlowBoundsFromClientRects,
+  getTightExportFrame,
+} from './lib/exportImageFrame'
 import {
   formatMermaidLabel,
   updateNodeLabelInMermaid,
@@ -360,6 +363,34 @@ function getAbsoluteNodePosition(node, allNodes) {
   }
 
   return { x, y }
+}
+
+function getViewportZoom(viewport) {
+  const transform = window.getComputedStyle(viewport).transform
+  if (!transform || transform === 'none') return 1
+  const match = transform.match(/^matrix\(([^,]+)/)
+  const parsed = match ? Number.parseFloat(match[1]) : 1
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1
+}
+
+function getRenderedDiagramBounds(viewport) {
+  const elements = Array.from(
+    viewport.querySelectorAll(
+      [
+        '.react-flow__node',
+        '.react-flow__edge-path',
+        '.react-flow__connection-path',
+        '.edge-label-text',
+        '.edge-label-hitbox',
+      ].join(','),
+    ),
+  )
+
+  return getFlowBoundsFromClientRects(
+    viewport.getBoundingClientRect(),
+    getViewportZoom(viewport),
+    elements.map((element) => element.getBoundingClientRect()),
+  )
 }
 
 function EditorInner({
@@ -732,19 +763,16 @@ function EditorInner({
     const viewport = document.querySelector('.react-flow__viewport')
     const all = nodesRef.current
     if (!viewport || all.length === 0) return
-    const bounds = reactFlow.getNodesBounds(all)
-    const pad = 40
-    const imgW = Math.max(10, Math.round(bounds.width + pad * 2))
-    const imgH = Math.max(10, Math.round(bounds.height + pad * 2))
-    const vp = getViewportForBounds(bounds, imgW, imgH, 0.5, 2, pad)
+    const bounds = getRenderedDiagramBounds(viewport) ?? reactFlow.getNodesBounds(all)
+    const frame = getTightExportFrame(bounds)
     const opts = {
       backgroundColor: theme === 'dark' ? '#0f172a' : '#ffffff',
-      width: imgW,
-      height: imgH,
+      width: frame.width,
+      height: frame.height,
       style: {
-        width: `${imgW}px`,
-        height: `${imgH}px`,
-        transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})`,
+        width: `${frame.width}px`,
+        height: `${frame.height}px`,
+        transform: frame.transform,
       },
     }
     const dataUrl = await (type === 'svg' ? toSvg : toPng)(viewport, opts)
