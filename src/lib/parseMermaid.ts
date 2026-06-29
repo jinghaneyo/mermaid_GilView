@@ -72,11 +72,66 @@ interface DiagramDb {
   getEdges: () => DiagramEdge[]
   getDirection?: () => string
   getSubGraphs?: () => DiagramSubGraph[]
+  getActorKeys?: () => string[]
+  getActors?: () => Map<string, SequenceActor>
+  getMessages?: () => SequenceMessage[]
 }
 
 interface DiagramLike {
   type: string
   db: DiagramDb
+}
+
+interface SequenceActor {
+  name: string
+  description?: string
+}
+
+interface SequenceMessage {
+  from?: unknown
+  to?: unknown
+  message?: unknown
+}
+
+function parseSequenceDiagram(db: DiagramDb): ParsedGraph {
+  const actors = db.getActors?.() ?? new Map<string, SequenceActor>()
+  const actorKeys = db.getActorKeys?.() ?? Array.from(actors.keys())
+  const messages = db.getMessages?.() ?? []
+  const actorMessages = messages.filter(
+    (message): message is SequenceMessage & { from: string; to: string } =>
+      typeof message.from === 'string' && typeof message.to === 'string',
+  )
+  const nodeIds = new Set(actorKeys)
+
+  for (const message of actorMessages) {
+    nodeIds.add(message.from)
+    nodeIds.add(message.to)
+  }
+
+  const nodes: GraphNode[] = Array.from(nodeIds).map((id) => {
+    const actor = actors.get(id)
+    return {
+      id,
+      label: actor?.description || actor?.name || id,
+      shape: 'rect',
+    }
+  })
+
+  const edges: GraphEdge[] = actorMessages.map((message, index) => {
+    const label =
+      typeof message.message === 'string' && message.message !== ''
+        ? normalizeLabelText(message.message)
+        : undefined
+
+    return {
+      id: `${message.from}-${message.to}-${index}`,
+      source: message.from,
+      target: message.to,
+      ...(label ? { label } : {}),
+    }
+  })
+
+  return { nodes, edges, direction: 'LR' }
 }
 
 export async function parseMermaid(
@@ -95,15 +150,16 @@ export async function parseMermaid(
     const parsed = await mermaid.parse(trimmed)
     const diagramType = (parsed as { diagramType?: string }).diagramType
 
-    // Only flowchart types are supported
+    // Only flowchart and sequence diagram types are supported
     if (
       diagramType &&
       diagramType !== 'flowchart-v2' &&
-      diagramType !== 'flowchart'
+      diagramType !== 'flowchart' &&
+      diagramType !== 'sequence'
     ) {
       return {
         graph: null,
-        error: `현재 flowchart(graph TD/LR)만 지원합니다. (감지된 타입: ${diagramType})`,
+        error: `현재 flowchart(graph TD/LR)와 sequenceDiagram만 지원합니다. (감지된 타입: ${diagramType})`,
       }
     }
 
@@ -111,6 +167,10 @@ export async function parseMermaid(
     const api = (mermaid as unknown as { mermaidAPI: { getDiagramFromText: (t: string) => Promise<DiagramLike> } }).mermaidAPI
     const diagram = await api.getDiagramFromText(trimmed)
     const db = diagram.db
+
+    if (diagramType === 'sequence' || diagram.type === 'sequence') {
+      return { graph: parseSequenceDiagram(db), error: null }
+    }
 
     // getVertices() returns a Map<id, vertex> in mermaid 11.4.1
     const verticesMap = db.getVertices()

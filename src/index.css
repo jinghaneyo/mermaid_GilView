@@ -66,6 +66,58 @@ html, body, #root {
   box-shadow: 0 0 0 1px rgb(250 204 21 / 0.18);
 }
 
+@keyframes diagram-node-flash {
+  0%, 100% {
+    filter: drop-shadow(0 0 0 rgb(59 130 246 / 0));
+  }
+  15%, 45%, 75% {
+    filter: drop-shadow(0 0 10px rgb(59 130 246 / 0.95));
+  }
+  30%, 60% {
+    filter: drop-shadow(0 0 3px rgb(59 130 246 / 0.35));
+  }
+}
+
+.diagram-node-flash {
+  animation: diagram-node-flash 1.4s ease-in-out;
+}
+
+@keyframes sequence-object-flash {
+  0%, 100% {
+    filter: drop-shadow(0 0 0 rgb(250 204 21 / 0));
+    opacity: 1;
+  }
+  12%, 44%, 76% {
+    filter:
+      drop-shadow(0 0 5px rgb(250 204 21 / 1))
+      drop-shadow(0 0 16px rgb(14 165 233 / 0.95));
+    opacity: 1;
+  }
+  28%, 60% {
+    filter: drop-shadow(0 0 10px rgb(250 204 21 / 0.85));
+    opacity: 0.68;
+  }
+}
+
+.sequence-object-flash {
+  animation: sequence-object-flash 1.6s ease-in-out;
+}
+
+.sequence-object-flash rect,
+.sequence-object-flash line,
+.sequence-object-flash path {
+  stroke: #facc15 !important;
+  stroke-width: 4px !important;
+}
+
+.sequence-object-flash text {
+  fill: #facc15 !important;
+  font-weight: 800;
+  paint-order: stroke;
+  stroke: rgb(15 23 42 / 0.9);
+  stroke-width: 3px;
+}
+
 .code-editor-textarea {
   overflow: auto;
   overflow-wrap: normal;

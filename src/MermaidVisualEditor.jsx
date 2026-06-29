@@ -14,21 +14,23 @@ import {
   useReactFlow,
 } from '@xyflow/react'
 import { toPng, toSvg } from 'html-to-image'
+import mermaid from 'mermaid'
 import '@xyflow/react/dist/style.css'
 
-// 데이터 URL/Blob URL을 파일로 다운로드
 function triggerDownload(url, filename) {
   const a = document.createElement('a')
   a.href = url
   a.download = filename
   a.click()
 }
-// Code -> Canvas 는 "실제 mermaid 공식 파서"를 사용한다.
-// convertMermaid = parseMermaid(mermaid 파서) + layout(dagre 계층 배치)
-// → subgraph / 노드 모양({},()) / 점선·굵은 화살표 등 복잡한 문법도 mermaid와 동일하게 해석됨.
 import { convertMermaid } from './lib/convertMermaid'
 import { scrollTopForLine } from './lib/codeEditorScroll'
 import { estimateLabelEditorRows } from './lib/labelEditorSizing'
+import {
+  centerViewportOnPoint,
+  minimapViewportRect,
+  viewportFromMinimapPoint,
+} from './lib/visualViewport'
 import {
   findMermaidElementAtOffset,
   findNodeLocationInMermaid,
@@ -54,15 +56,18 @@ import {
 } from './lib/updateEdgesInMermaid'
 import { addNodeToMermaidWithId } from './lib/updateNodesInMermaid'
 import { placeAddedNodeNearAnchor } from './lib/placeAddedNode'
+import {
+  addSequenceMessage,
+  addSequenceParticipant,
+  moveSequenceParticipant,
+  parseSequenceEditorModel,
+  renameSequenceParticipant,
+  updateSequenceMessageLabel,
+} from './lib/sequenceDiagram'
 import EditableEdge, { EdgeLabelChangeContext } from './components/EditableEdge'
 
 /* ------------------------------------------------------------------ *
- * convertCanvasToMermaid: { nodes, edges } -> Mermaid 텍스트
- *   - 첫 줄은 항상 graph TD
- *   - 노드: ID[라벨] (라벨 없으면 ID)
- *   - 엣지: A --> B (라벨 있으면 A -->|라벨| B)
- *   ※ 캔버스에서 표현 가능한 기본 flowchart 형태로만 출력한다
- *     (subgraph/도형 등은 캔버스에 구조가 없으므로 역출력에 포함되지 않음)
+ * convertCanvasToMermaid: { nodes, edges } -> Mermaid text
  * ------------------------------------------------------------------ */
 export function convertCanvasToMermaid(nodes, edges) {
   const lines = ['graph TD']
@@ -92,37 +97,35 @@ export function convertCanvasToMermaid(nodes, edges) {
 }
 
 /* ------------------------------------------------------------------ *
- * MermaidVisualEditor: 좌(코드) / 우(캔버스) 양방향 에디터
- *
- *   - Code  -> Canvas : Textarea onChange -> mermaid 파서로 파싱 + dagre 배치
- *   - Canvas -> Code  : onConnect(선 연결) / onNodeDragStop(드래그 종료) ->
- *                       현재 구조를 Mermaid 코드로 변환해 Textarea 갱신
- *
- *   두 방향이 서로 다른 사용자 이벤트로만 발생하므로 무한 루프가 없다.
- *   (code->canvas 는 onChange/마운트에서만, canvas->code 는 connect/dragStop 에서만)
+ * MermaidVisualEditor: bidirectional Mermaid code / canvas editor
  * ------------------------------------------------------------------ */
 
-const INITIAL_CODE = 'graph TD\nA[시작] --> B[종료]'
+const INITIAL_CODE = 'graph TD\nA[Start] --> B[End]'
 
-// 예제/템플릿
+// Templates
 const TEMPLATES = {
-  basic: 'graph TD\n  A[시작] --> B[처리]\n  B --> C[종료]',
+  basic: 'graph TD\n  A[Start] --> B[Process]\n  B --> C[End]',
   decision:
-    'graph TD\n  A[시작] --> B{조건}\n  B -->|예| C[처리]\n  B -->|아니오| D[종료]\n  C --> D',
+    'graph TD\n  A[Start] --> B{Condition}\n  B -->|Yes| C[Process]\n  B -->|No| D[End]\n  C --> D',
   subgraph:
-    'graph TD\n  subgraph 입력\n    A[수집] --> B[검증]\n  end\n  subgraph 처리\n    C[변환] --> D[저장]\n  end\n  B --> C',
+    'graph TD\n  subgraph Input\n    A[Collect] --> B[Validate]\n  end\n  subgraph Process\n    C[Transform] --> D[Store]\n  end\n  B --> C',
   shapes:
-    'graph TD\n  A[사각형] --> B{마름모}\n  B --> C[(원통)]\n  B --> D([스타디움])\n  C --> E((원))',
+    'graph TD\n  A[Rectangle] --> B{Diamond}\n  B --> C[(Cylinder)]\n  B --> D([Stadium])\n  C --> E((Circle))',
+  sequence:
+    'sequenceDiagram\n  participant A as Alice\n  participant B as Bob\n  A->>B: Hello\n  B-->>A: Hi',
 }
 
-// subgraph 그룹 박스를 그리는 커스텀 노드 (멤버 노드 뒤에 깔리는 사각 박스 + 제목)
 const GroupSizeChangeContext = createContext(() => {})
 
 function GroupNode({ data }) {
   const onGroupSizeChange = useContext(GroupSizeChangeContext)
 
   return (
-    <div className="relative h-full w-full rounded-lg border-2 border-amber-400/80 bg-amber-200/20">
+    <div
+      className={`relative h-full w-full rounded-lg border-2 border-amber-400/80 bg-amber-200/20 ${
+        data.codeFocusFlash ? 'diagram-node-flash' : ''
+      }`}
+    >
       <NodeResizer
         isVisible={Boolean(data.resizeSelected)}
         minWidth={120}
@@ -143,12 +146,8 @@ function GroupNode({ data }) {
   )
 }
 
-// 노드 모양별 본체 렌더 (마름모/원통/원/스타디움/사각형)
-// 색은 테마 대응: 라이트=흰 채움/짙은 글자, 다크=짙은 채움(slate-700)/밝은 글자.
-// SVG 도형의 채움은 currentColor 로 두고 text-* 클래스로 테마별 색을 준다.
 function ShapeBody({ shape, label }) {
-  const stroke = '#94a3b8' // slate-400 (양쪽 테마에서 모두 보임)
-  // SVG 채움색: 라이트=흰색, 다크=slate-700
+  const stroke = '#94a3b8'
   const svgFill = 'text-white dark:text-slate-700'
   const labelText = 'whitespace-pre-line text-slate-800 dark:text-slate-100'
 
@@ -229,11 +228,9 @@ function ShapeBody({ shape, label }) {
   if (shape === 'round') {
     return <div className={`${base} rounded-2xl`}>{label}</div>
   }
-  // rect (기본)
   return <div className={`${base} rounded-md`}>{label}</div>
 }
 
-// 커스텀 노드: 모양 본체 + 위/아래 연결 핸들
 const NodeLabelChangeContext = createContext(() => {})
 const NodeSizeChangeContext = createContext(() => {})
 
@@ -272,7 +269,9 @@ function ShapeNode({ id, data, width }) {
 
   return (
     <div
-      className="relative h-full w-full"
+      className={`relative h-full w-full ${
+        data.codeFocusFlash ? 'diagram-node-flash' : ''
+      }`}
       onDoubleClick={(e) => {
         e.stopPropagation()
         setValue(data.label ?? id)
@@ -343,13 +342,1083 @@ function ShapeNode({ id, data, width }) {
 const nodeTypes = { group: GroupNode, shape: ShapeNode }
 const edgeTypes = { editable: EditableEdge }
 const ADD_NODE_SHAPES = [
-  { key: 'rect', label: '사각형 노드', icon: '□' },
-  { key: 'diamond', label: '마름모 노드', icon: '◇' },
-  { key: 'cylinder', label: '원통 노드', icon: '▭' },
-  { key: 'stadium', label: '스타디움 노드', icon: '⬭' },
-  { key: 'round', label: '둥근 노드', icon: '▢' },
-  { key: 'circle', label: '원 노드', icon: '○' },
+  { key: 'rect', label: 'Rect node', icon: 'rect' },
+  { key: 'diamond', label: 'Diamond node', icon: 'dia' },
+  { key: 'cylinder', label: 'Cylinder node', icon: 'cyl' },
+  { key: 'stadium', label: 'Stadium node', icon: 'std' },
+  { key: 'round', label: 'Round node', icon: 'rnd' },
+  { key: 'circle', label: 'Circle node', icon: 'cir' },
 ]
+
+function isSequenceDiagram(code) {
+  const firstStatement = code
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith('%%'))
+  return /^sequenceDiagram\b/i.test(firstStatement ?? '')
+}
+
+function sequenceElementKey(element) {
+  if (!element) return ''
+  return element.type === 'participant'
+    ? `participant:${element.id}`
+    : `message:${element.lineIndex}`
+}
+
+function getSequenceSearchMatches(query, model) {
+  const term = query.trim().toLowerCase()
+  if (!term) return []
+
+  const participantMatches = model.participants
+    .filter((participant) => {
+      return (
+        participant.id.toLowerCase().includes(term) ||
+        participant.label.toLowerCase().includes(term)
+      )
+    })
+    .map((participant) => ({
+      type: 'participant',
+      id: participant.id,
+      label: participant.label,
+      lineIndex: participant.lineIndex,
+    }))
+
+  const messageMatches = model.messages
+    .filter((message) => {
+      return [message.from, message.to, message.label]
+        .some((value) => String(value).toLowerCase().includes(term))
+    })
+    .map((message) => ({
+      type: 'message',
+      id: message.id,
+      label: message.label,
+      lineIndex: message.lineIndex,
+    }))
+
+  return [...participantMatches, ...messageMatches]
+}
+
+function lineBoundsAtIndex(code, lineIndex) {
+  const lines = code.split(/\r?\n/)
+  let start = 0
+  for (let index = 0; index < lineIndex; index += 1) {
+    start += lines[index].length + 1
+  }
+  return { start, end: start + (lines[lineIndex]?.length ?? 0) }
+}
+
+function lineIndexAtOffset(code, offset) {
+  const safeOffset = Math.max(0, Math.min(offset, code.length))
+  return code.slice(0, safeOffset).split(/\r?\n/).length - 1
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function findSequenceElementAtLine(code, lineIndex) {
+  const model = parseSequenceEditorModel(code)
+  const participant = model.participants.find(
+    (current) => current.lineIndex === lineIndex,
+  )
+  if (participant) {
+    return {
+      type: 'participant',
+      id: participant.id,
+      label: participant.label,
+      lineIndex: participant.lineIndex,
+    }
+  }
+
+  const message = model.messages.find((current) => current.lineIndex === lineIndex)
+  if (message) {
+    return {
+      type: 'message',
+      id: message.id,
+      label: message.label,
+      lineIndex: message.lineIndex,
+    }
+  }
+
+  return null
+}
+
+function parseSvgDimension(value) {
+  if (!value) return null
+  const match = String(value).trim().match(/^(\d+(?:\.\d+)?)(?:px)?$/)
+  return match ? Number(match[1]) : null
+}
+
+function getSvgSize(svg, fallbackWidth, fallbackHeight) {
+  const svgTag = svg.match(/<svg\b[^>]*>/i)?.[0] ?? ''
+  const width = parseSvgDimension(svgTag.match(/\bwidth="([^"]+)"/i)?.[1])
+  const height = parseSvgDimension(svgTag.match(/\bheight="([^"]+)"/i)?.[1])
+  if (width && height) return { width, height }
+
+  const viewBox = svgTag.match(/\bviewBox="([^"]+)"/i)?.[1]
+  const parts = viewBox?.split(/\s+/).map(Number) ?? []
+  if (parts.length === 4 && Number.isFinite(parts[2]) && Number.isFinite(parts[3])) {
+    return { width: parts[2], height: parts[3] }
+  }
+
+  return { width: fallbackWidth, height: fallbackHeight }
+}
+
+function SequenceFragmentBox({ fragment, layout, colors, isDark }) {
+  const startY = layout.yForEventIndex(fragment.startEventIndex) - 32
+  const endY = layout.yForEventIndex(fragment.endEventIndex) + 38
+  const depthOffset = fragment.depth * 14
+  const left = layout.marginX - 38 + depthOffset
+  const right =
+    layout.xForParticipant(layout.lastParticipantId) +
+    layout.participantWidth / 2 +
+    38 -
+    depthOffset
+
+  return (
+    <g data-testid="sequence-fragment">
+      <rect
+        x={left}
+        y={startY}
+        width={Math.max(180, right - left)}
+        height={Math.max(54, endY - startY)}
+        rx="4"
+        fill={isDark ? '#0f172a' : '#f8fafc'}
+        stroke={isDark ? '#64748b' : '#94a3b8'}
+        strokeDasharray="5 4"
+      />
+      <path
+        d={`M${left},${startY} H${left + 86} L${left + 72},${startY + 22} H${left} Z`}
+        fill={isDark ? '#1e293b' : '#e2e8f0'}
+        stroke={isDark ? '#64748b' : '#94a3b8'}
+      />
+      <text x={left + 12} y={startY + 15} fill={colors.text} fontSize="12" fontWeight="700">
+        {fragment.kind}
+      </text>
+      {fragment.label ? (
+        <text
+          x={(left + right) / 2}
+          y={startY + 18}
+          textAnchor="middle"
+          fill={colors.text}
+          fontSize="12"
+        >
+          [{fragment.label}]
+        </text>
+      ) : null}
+    </g>
+  )
+}
+
+function SequenceActivationBlock({ activation, layout, isDark }) {
+  const x = layout.xForParticipant(activation.participant) - 5
+  const top = layout.yForEventIndex(activation.startEventIndex) - 12
+  const bottom = layout.yForEventIndex(activation.endEventIndex) + 30
+
+  return (
+    <rect
+      data-testid="sequence-activation"
+      x={x}
+      y={top}
+      width="10"
+      height={Math.max(28, bottom - top)}
+      fill={isDark ? '#334155' : '#dbeafe'}
+      stroke={isDark ? '#93c5fd' : '#2563eb'}
+      rx="2"
+    />
+  )
+}
+
+function SequenceNoteBlock({ note, layout, colors, isDark }) {
+  const y = layout.yForLineIndex(note.lineIndex)
+  const xs = note.participants.map((participant) => layout.xForParticipant(participant))
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const width = note.placement === 'over' ? Math.max(170, maxX - minX + 120) : 170
+  const left =
+    note.placement === 'left'
+      ? minX - width - 24
+      : note.placement === 'right'
+        ? maxX + 24
+        : minX - 60
+
+  return (
+    <g data-testid="sequence-note">
+      <rect
+        x={left}
+        y={y - 24}
+        width={width}
+        height="42"
+        rx="3"
+        fill={isDark ? '#422006' : '#fef3c7'}
+        stroke={isDark ? '#facc15' : '#d97706'}
+      />
+      <text
+        x={left + width / 2}
+        y={y + 2}
+        textAnchor="middle"
+        fill={colors.text}
+        fontSize="12"
+      >
+        {note.text}
+      </text>
+    </g>
+  )
+}
+
+function SequenceCallBlock({
+  message,
+  x,
+  y,
+  colors,
+  isDark,
+  isFlashing,
+  onSelect,
+  onEdit,
+}) {
+  const callBlockWidth = 210
+  const callBlockHeight = 40
+
+  return (
+    <g
+      data-testid="sequence-call-block"
+      role="button"
+      tabIndex="0"
+      className={isFlashing ? 'diagram-node-flash sequence-object-flash' : ''}
+      style={{ cursor: 'pointer' }}
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={onSelect}
+      onDoubleClick={onEdit}
+    >
+      <rect
+        x={x - callBlockWidth / 2}
+        y={y - callBlockHeight / 2}
+        width={callBlockWidth}
+        height={callBlockHeight}
+        rx="3"
+        fill={isDark ? '#0f172a' : '#f8fafc'}
+        stroke={isDark ? '#38bdf8' : '#0284c7'}
+        strokeWidth="2"
+      />
+      <text
+        x={x}
+        y={y + 4}
+        textAnchor="middle"
+        fill={colors.text}
+        fontSize="12"
+        fontWeight="600"
+      >
+        {message.label}
+      </text>
+    </g>
+  )
+}
+
+function SequenceMessageArrow({
+  message,
+  fromX,
+  toX,
+  y,
+  colors,
+  markerId,
+  isFlashing,
+  onSelect,
+  onEdit,
+}) {
+  const isReturn = message.arrow.includes('--')
+  const direction = toX >= fromX ? 1 : -1
+
+  return (
+    <g
+      role="button"
+      tabIndex="0"
+      className={isFlashing ? 'diagram-node-flash sequence-object-flash' : ''}
+      style={{ cursor: 'pointer' }}
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={onSelect}
+      onDoubleClick={onEdit}
+    >
+      <line
+        x1={fromX + direction * 18}
+        y1={y}
+        x2={toX - direction * 18}
+        y2={y}
+        stroke={colors.line}
+        strokeWidth="1.7"
+        strokeDasharray={isReturn ? '5 4' : undefined}
+        markerEnd={`url(#${markerId})`}
+      />
+      <text
+        x={Math.min(fromX, toX) + Math.abs(toX - fromX) / 2}
+        y={y - 10}
+        textAnchor="middle"
+        fill={colors.text}
+        fontSize="12"
+      >
+        {message.label}
+      </text>
+    </g>
+  )
+}
+
+function SequenceCanvas({
+  code,
+  sequenceSvg,
+  theme,
+  selectedElement,
+  focusRequestKey,
+  zoom,
+  onSelectElement,
+  onRenameParticipant,
+  onUpdateMessage,
+  onMoveParticipant,
+  onZoomChange,
+}) {
+  const model = parseSequenceEditorModel(code)
+  const [editingParticipantId, setEditingParticipantId] = useState(null)
+  const [participantDraft, setParticipantDraft] = useState('')
+  const [editingMessageLine, setEditingMessageLine] = useState(null)
+  const [messageDraft, setMessageDraft] = useState('')
+  const [scrollViewport, setScrollViewport] = useState({
+    left: 0,
+    top: 0,
+    width: 320,
+    height: 220,
+  })
+  const [isCanvasPanning, setIsCanvasPanning] = useState(false)
+  const [flashingKey, setFlashingKey] = useState('')
+  const scrollContainerRef = useRef(null)
+  const sequenceSurfaceRef = useRef(null)
+  const dragRef = useRef(null)
+  const canvasPanRef = useRef(null)
+  const minimapDraggingRef = useRef(false)
+  const elementRefs = useRef(new Map())
+  const flashTimerRef = useRef(null)
+  const markerIdRef = useRef(`sequence-arrow-${Math.random().toString(36).slice(2)}`)
+  const selectedKey = sequenceElementKey(selectedElement)
+
+  const participantWidth = 128
+  const participantHeight = 32
+  const gap = 172
+  const marginX = 72
+  const topY = 28
+  const lifelineTop = topY + participantHeight
+  const firstMessageY = lifelineTop + 52
+  const messageGap = 58
+  const bottomPadding = 76
+  const eventCount = Math.max(1, model.events.length || model.messages.length)
+  const diagramWidth = Math.max(
+    720,
+    marginX * 2 + participantWidth + Math.max(0, model.participants.length - 1) * gap,
+  )
+  const diagramHeight = Math.max(
+    280,
+    firstMessageY + eventCount * messageGap + bottomPadding,
+  )
+  const renderWidth = diagramWidth
+  const renderHeight = diagramHeight
+  const bottomY = diagramHeight - participantHeight - 24
+  const minimapWidth = 144
+  const minimapHeight = 78
+  const minimapPadding = 8
+  const minimapPlotWidth = minimapWidth - minimapPadding * 2
+  const minimapPlotHeight = minimapHeight - minimapPadding * 2
+  const isDark = theme === 'dark'
+  const colors = {
+    boxFill: isDark ? '#111827' : '#f8fafc',
+    boxStroke: isDark ? '#64748b' : '#475569',
+    selectedStroke: '#2563eb',
+    text: isDark ? '#e2e8f0' : '#0f172a',
+    line: isDark ? '#94a3b8' : '#475569',
+    messageFill: isDark ? '#0f172a' : '#ffffff',
+  }
+  const minimapColors = {
+    background: isDark ? '#0f172a' : '#f8fafc',
+    participant: isDark ? '#1e293b' : '#e2e8f0',
+    participantStroke: isDark ? '#94a3b8' : '#64748b',
+    line: isDark ? '#94a3b8' : '#475569',
+    message: '#2563eb',
+    viewport: isDark ? '#38bdf8' : '#2563eb',
+  }
+
+  const xForParticipant = (participantId) => {
+    const index = model.participants.findIndex(
+      (participant) => participant.id === participantId,
+    )
+    return index < 0 ? marginX + participantWidth / 2 : marginX + participantWidth / 2 + index * gap
+  }
+  const eventIndexByLine = new Map(
+    model.events.map((event, index) => [event.lineIndex, index]),
+  )
+  const yForEventIndex = (eventIndex) => firstMessageY + eventIndex * messageGap
+  const yForLineIndex = (lineIndex, fallbackIndex = 0) =>
+    yForEventIndex(eventIndexByLine.get(lineIndex) ?? fallbackIndex)
+  const sequenceLayout = {
+    participantWidth,
+    marginX,
+    lastParticipantId: model.participants.at(-1)?.id,
+    xForParticipant,
+    yForEventIndex,
+    yForLineIndex,
+  }
+
+  const minimapX = (x) => minimapPadding + (x / renderWidth) * minimapPlotWidth
+  const minimapY = (y) => minimapPadding + (y / renderHeight) * minimapPlotHeight
+  const contentWidth = renderWidth * zoom
+  const contentHeight = renderHeight * zoom
+  const viewportRect = minimapViewportRect({
+    scroll: scrollViewport,
+    contentWidth,
+    contentHeight,
+    minimapWidth,
+    minimapHeight,
+    padding: minimapPadding,
+  })
+
+  const updateScrollViewport = (element) => {
+    setScrollViewport({
+      left: element.scrollLeft,
+      top: element.scrollTop,
+      width: element.clientWidth || scrollViewport.width,
+      height: element.clientHeight || scrollViewport.height,
+    })
+  }
+
+  const focusPointForElement = (element) => {
+    if (!element) return null
+    if (element.type === 'participant') {
+      return {
+        x: xForParticipant(element.id),
+        y: topY + participantHeight / 2,
+      }
+    }
+
+    const message = model.messages.find(
+      (current) =>
+        current.lineIndex === element.lineIndex ||
+        (element.id && current.id === element.id),
+    )
+    if (!message) return null
+
+    const fromX = xForParticipant(message.from)
+    const toX = xForParticipant(message.to)
+    return {
+      x:
+        message.from === message.to
+          ? fromX
+          : Math.min(fromX, toX) + Math.abs(toX - fromX) / 2,
+      y: yForLineIndex(message.lineIndex),
+    }
+  }
+
+  useEffect(() => {
+    if (!focusRequestKey || !selectedKey) return
+    const element = scrollContainerRef.current
+    const focusPoint = focusPointForElement(selectedElement)
+    if (!element || !focusPoint) return
+
+    const clientWidth = element.clientWidth || scrollViewport.width
+    const clientHeight = element.clientHeight || scrollViewport.height
+    const nextScroll = centerViewportOnPoint({
+      point: focusPoint,
+      zoom,
+      contentWidth,
+      contentHeight,
+      clientWidth,
+      clientHeight,
+    })
+
+    element.scrollLeft = nextScroll.left
+    element.scrollTop = nextScroll.top
+    setScrollViewport({
+      left: nextScroll.left,
+      top: nextScroll.top,
+      width: clientWidth,
+      height: clientHeight,
+    })
+
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+    setFlashingKey(selectedKey)
+    flashTimerRef.current = setTimeout(() => {
+      setFlashingKey('')
+      flashTimerRef.current = null
+    }, 1400)
+  }, [focusRequestKey])
+
+  useEffect(() => {
+    return () => {
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+    }
+  }, [])
+
+  const shouldSkipCanvasPan = (target) => {
+    return Boolean(
+      target?.closest?.(
+        'button,input,textarea,select,[contenteditable="true"],[data-no-canvas-pan="true"]',
+      ),
+    )
+  }
+
+  const beginCanvasPan = (event) => {
+    if (event.button !== 0 || shouldSkipCanvasPan(event.target)) return
+
+    const element = event.currentTarget
+    canvasPanRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: element.scrollLeft,
+      scrollTop: element.scrollTop,
+    }
+    setIsCanvasPanning(true)
+  }
+
+  const moveCanvasPan = (event) => {
+    const drag = canvasPanRef.current
+    const element = scrollContainerRef.current
+    if (!drag || !element) return
+
+    event.preventDefault()
+    element.scrollLeft = drag.scrollLeft - (event.clientX - drag.startX)
+    element.scrollTop = drag.scrollTop - (event.clientY - drag.startY)
+    updateScrollViewport(element)
+  }
+
+  const endCanvasPan = () => {
+    if (!canvasPanRef.current) return
+    canvasPanRef.current = null
+    setIsCanvasPanning(false)
+  }
+
+  const finishParticipantDrag = (event, participantId = null) => {
+    const drag = dragRef.current
+    if (!drag || (participantId && drag.id !== participantId)) return false
+
+    dragRef.current = null
+    if (Math.abs(event.clientX - drag.startX) < 12) return false
+
+    const diagramRect = sequenceSurfaceRef.current?.getBoundingClientRect()
+    const localX = event.clientX - (diagramRect?.left ?? 0)
+    const targetIndex = Math.max(
+      0,
+      Math.min(
+        model.participants.length - 1,
+        Math.round((localX / zoom - marginX - participantWidth / 2) / gap),
+      ),
+    )
+
+    if (targetIndex !== drag.startIndex) {
+      onMoveParticipant(drag.id, targetIndex)
+      return true
+    }
+
+    return false
+  }
+
+  const panFromMinimapEvent = (event) => {
+    const element = scrollContainerRef.current
+    if (!element) return
+
+    const rect = event.currentTarget.getBoundingClientRect()
+    const clientWidth = element.clientWidth || scrollViewport.width
+    const clientHeight = element.clientHeight || scrollViewport.height
+    const nextScroll = viewportFromMinimapPoint({
+      point: {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+      },
+      contentWidth,
+      contentHeight,
+      clientWidth,
+      clientHeight,
+      minimapWidth,
+      minimapHeight,
+      padding: minimapPadding,
+    })
+
+    element.scrollLeft = nextScroll.left
+    element.scrollTop = nextScroll.top
+    updateScrollViewport(element)
+  }
+
+  const handleMinimapWheel = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const delta = event.deltaY < 0 ? 0.1 : -0.1
+    onZoomChange((currentZoom) =>
+      clampNumber(+(currentZoom + delta).toFixed(2), 0.5, 2),
+    )
+  }
+
+  const handleCanvasWheel = (event) => {
+    event.preventDefault()
+
+    const element = event.currentTarget
+    const nextZoom = clampNumber(
+      +(zoom + (event.deltaY < 0 ? 0.1 : -0.1)).toFixed(2),
+      0.5,
+      2,
+    )
+    if (nextZoom === zoom) return
+
+    const rect = element.getBoundingClientRect()
+    const offsetX = event.clientX - rect.left
+    const offsetY = event.clientY - rect.top
+    const diagramX = (element.scrollLeft + offsetX) / zoom
+    const diagramY = (element.scrollTop + offsetY) / zoom
+
+    onZoomChange(nextZoom)
+
+    window.requestAnimationFrame?.(() => {
+      element.scrollLeft = diagramX * nextZoom - offsetX
+      element.scrollTop = diagramY * nextZoom - offsetY
+      updateScrollViewport(element)
+    })
+  }
+
+  const commitParticipant = () => {
+    if (!editingParticipantId) return
+    onRenameParticipant(editingParticipantId, participantDraft)
+    setEditingParticipantId(null)
+  }
+
+  const commitMessage = () => {
+    if (editingMessageLine === null) return
+    onUpdateMessage(editingMessageLine, messageDraft)
+    setEditingMessageLine(null)
+  }
+
+  const beginParticipantEdit = (participant) => {
+    setEditingParticipantId(participant.id)
+    setParticipantDraft(participant.label)
+  }
+
+  const beginMessageEdit = (message) => {
+    setEditingMessageLine(message.lineIndex)
+    setMessageDraft(message.label)
+  }
+
+  if (model.participants.length === 0) {
+    return (
+      <div
+        data-testid="sequence-editor-canvas"
+        className={`flex h-full w-full items-center justify-center text-sm ${
+          isDark ? 'text-slate-300' : 'text-slate-600'
+        }`}
+      >
+        sequenceDiagram
+      </div>
+    )
+  }
+
+  return (
+    <div
+      ref={scrollContainerRef}
+      data-testid="sequence-editor-canvas"
+      className={`relative h-full w-full overflow-auto p-6 ${
+        isCanvasPanning ? 'cursor-grabbing' : 'cursor-grab'
+      } ${isDark ? 'bg-slate-900' : 'bg-white'}`}
+      onScroll={(event) => updateScrollViewport(event.currentTarget)}
+      onMouseDown={beginCanvasPan}
+      onMouseMove={moveCanvasPan}
+      onMouseUp={(event) => {
+        finishParticipantDrag(event)
+        endCanvasPan()
+      }}
+      onMouseLeave={endCanvasPan}
+      onWheel={handleCanvasWheel}
+    >
+      <div
+        className="relative"
+        style={{
+          width: renderWidth * zoom,
+          height: renderHeight * zoom,
+          color: colors.text,
+        }}
+      >
+        <div
+          ref={sequenceSurfaceRef}
+          data-testid="sequence-diagram-surface"
+          className="absolute left-0 top-0"
+          style={{
+            width: renderWidth,
+            height: renderHeight,
+            transform: `scale(${zoom})`,
+            transformOrigin: 'top left',
+          }}
+        >
+          <svg
+            width={diagramWidth}
+            height={diagramHeight}
+            className="absolute inset-0"
+            aria-hidden="true"
+          >
+            <defs>
+              <marker
+                id={markerIdRef.current}
+                markerWidth="8"
+                markerHeight="8"
+                refX="7"
+                refY="4"
+                orient="auto"
+                markerUnits="strokeWidth"
+              >
+                <path d="M0,0 L8,4 L0,8 Z" fill={colors.line} />
+              </marker>
+            </defs>
+            {model.fragments.map((fragment) => (
+              <SequenceFragmentBox
+                key={`fragment-${fragment.startLineIndex}`}
+                fragment={fragment}
+                layout={sequenceLayout}
+                colors={colors}
+                isDark={isDark}
+              />
+            ))}
+            {model.participants.map((participant) => {
+              const x = xForParticipant(participant.id)
+              return (
+                <line
+                  key={`lifeline-${participant.id}`}
+                  x1={x}
+                  x2={x}
+                  y1={lifelineTop}
+                  y2={bottomY}
+                  stroke={colors.line}
+                  strokeDasharray="5 4"
+                  strokeWidth="1.5"
+                />
+              )
+            })}
+            {model.activations.map((activation) => (
+              <SequenceActivationBlock
+                key={`activation-${activation.startLineIndex}`}
+                activation={activation}
+                layout={sequenceLayout}
+                isDark={isDark}
+              />
+            ))}
+            {model.notes.map((note) => (
+              <SequenceNoteBlock
+                key={`note-${note.lineIndex}`}
+                note={note}
+                layout={sequenceLayout}
+                colors={colors}
+                isDark={isDark}
+              />
+            ))}
+            {model.messages.map((message, index) => {
+              const fromX = xForParticipant(message.from)
+              const toX = xForParticipant(message.to)
+              const y = yForLineIndex(message.lineIndex, index)
+              const messageKey = sequenceElementKey({
+                type: 'message',
+                lineIndex: message.lineIndex,
+              })
+              if (message.from === message.to) {
+                return (
+                  <SequenceCallBlock
+                    key={message.id}
+                    message={message}
+                    x={fromX}
+                    y={y}
+                    colors={colors}
+                    isDark={isDark}
+                    isFlashing={flashingKey === messageKey}
+                    onSelect={() =>
+                      onSelectElement({
+                        type: 'message',
+                        id: message.id,
+                        label: message.label,
+                        lineIndex: message.lineIndex,
+                      })
+                    }
+                    onEdit={() => beginMessageEdit(message)}
+                  />
+                )
+              }
+
+              return (
+                <SequenceMessageArrow
+                  key={message.id}
+                  message={message}
+                  fromX={fromX}
+                  toX={toX}
+                  y={y}
+                  colors={colors}
+                  markerId={markerIdRef.current}
+                  isFlashing={flashingKey === messageKey}
+                  onSelect={() =>
+                    onSelectElement({
+                      type: 'message',
+                      id: message.id,
+                      label: message.label,
+                      lineIndex: message.lineIndex,
+                    })
+                  }
+                  onEdit={() => beginMessageEdit(message)}
+                />
+              )
+            })}
+          </svg>
+
+          {model.participants.map((participant) => {
+            const x = xForParticipant(participant.id)
+            const key = sequenceElementKey({
+              type: 'participant',
+              id: participant.id,
+            })
+            const selected = key === selectedKey
+            const overlayVisibility = ''
+            const boxStyle = {
+              left: x - participantWidth / 2,
+              width: participantWidth,
+              height: participantHeight,
+              background: colors.boxFill,
+              borderColor: selected ? colors.selectedStroke : colors.boxStroke,
+              color: colors.text,
+            }
+            const commonClass =
+              'absolute flex items-center justify-center rounded border px-2 text-xs font-semibold shadow-sm'
+
+            return (
+              <div key={participant.id}>
+                {editingParticipantId === participant.id ? (
+                  <input
+                    aria-label="Edit participant label"
+                    autoFocus
+                    value={participantDraft}
+                    onChange={(event) => setParticipantDraft(event.target.value)}
+                    onBlur={commitParticipant}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        commitParticipant()
+                      } else if (event.key === 'Escape') {
+                        setEditingParticipantId(null)
+                      }
+                    }}
+                    className="absolute z-20 rounded border border-blue-500 bg-white px-2 text-center text-xs text-slate-900 outline-none ring-2 ring-blue-500"
+                    style={{ ...boxStyle, top: topY }}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    aria-label={participant.label}
+                    title="Click to select, double-click to edit, drag to reorder"
+                    data-selected={selected ? 'true' : undefined}
+                    ref={(node) => {
+                      if (node) elementRefs.current.set(key, node)
+                      else elementRefs.current.delete(key)
+                    }}
+                    onClick={() =>
+                      onSelectElement({
+                        type: 'participant',
+                        id: participant.id,
+                        label: participant.label,
+                        lineIndex: participant.lineIndex,
+                      })
+                    }
+                    onDoubleClick={() => beginParticipantEdit(participant)}
+                    onMouseDown={(event) => {
+                      event.stopPropagation()
+                      dragRef.current = {
+                        id: participant.id,
+                        startIndex: model.participants.findIndex(
+                          (current) => current.id === participant.id,
+                        ),
+                        startX: event.clientX,
+                      }
+                    }}
+                    onMouseUp={(event) => {
+                      finishParticipantDrag(event, participant.id)
+                    }}
+                    className={`${commonClass} z-10 hover:border-blue-500 hover:ring-2 hover:ring-blue-400 ${overlayVisibility} ${
+                      selected ? 'ring-2 ring-blue-500' : ''
+                    } ${flashingKey === key ? 'diagram-node-flash sequence-object-flash' : ''}`}
+                    style={{ ...boxStyle, top: topY }}
+                  >
+                    <span className="truncate">{participant.label}</span>
+                  </button>
+                )}
+                <div
+                  className={commonClass}
+                  style={{ ...boxStyle, top: bottomY }}
+                >
+                  <span className="truncate">{participant.label}</span>
+                </div>
+              </div>
+            )
+          })}
+
+          {model.messages.map((message, index) => {
+            const fromX = xForParticipant(message.from)
+            const toX = xForParticipant(message.to)
+            const y = yForLineIndex(message.lineIndex, index)
+            const labelX = Math.min(fromX, toX) + Math.abs(toX - fromX) / 2
+            const key = sequenceElementKey({
+              type: 'message',
+              lineIndex: message.lineIndex,
+            })
+            const selected = key === selectedKey
+            const isEditing = editingMessageLine === message.lineIndex
+            const editorLeft = Math.max(12, labelX - 100)
+
+            return isEditing ? (
+              <input
+                key={message.id}
+                aria-label="Edit message label"
+                autoFocus
+                value={messageDraft}
+                onChange={(event) => setMessageDraft(event.target.value)}
+                onBlur={commitMessage}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    commitMessage()
+                  } else if (event.key === 'Escape') {
+                    setEditingMessageLine(null)
+                  }
+                }}
+                className="absolute z-20 h-7 w-[200px] rounded border border-blue-500 bg-white px-2 text-center text-xs text-slate-900 outline-none ring-2 ring-blue-500"
+                style={{ left: editorLeft, top: y - 36 }}
+              />
+            ) : (
+              <button
+                key={message.id}
+                type="button"
+                aria-label={message.label || `${message.from} to ${message.to}`}
+                title="Click to select, double-click to edit message"
+                data-selected={selected ? 'true' : undefined}
+                data-message-overlay="true"
+                ref={(node) => {
+                  if (node) elementRefs.current.set(key, node)
+                  else elementRefs.current.delete(key)
+                }}
+                onClick={() =>
+                  onSelectElement({
+                    type: 'message',
+                    id: message.id,
+                    label: message.label,
+                    lineIndex: message.lineIndex,
+                  })
+                }
+                onDoubleClick={() => beginMessageEdit(message)}
+                className="absolute z-10 h-6 w-[220px] -translate-x-1/2 cursor-pointer border-0 bg-transparent p-0 text-transparent outline-none"
+                style={{
+                  left: labelX,
+                  top: y - 34,
+                }}
+              />
+            )
+          })}
+        </div>
+      </div>
+      <div
+        data-no-canvas-pan="true"
+        data-testid="sequence-minimap"
+        className={`sticky bottom-4 right-4 z-20 ml-auto mr-4 w-36 rounded border p-2 text-xs shadow ${
+          isDark
+            ? 'border-slate-600 bg-slate-800/95 text-slate-200'
+            : 'border-slate-200 bg-white/95 text-slate-700'
+        }`}
+      >
+        <div className="mb-1 flex justify-between">
+          <span>{model.participants.length} participants</span>
+          <span>{Math.round(zoom * 100)}%</span>
+        </div>
+        <svg
+          data-testid="sequence-minimap-svg"
+          aria-label="Sequence diagram minimap"
+          width={minimapWidth}
+          height={minimapHeight}
+          viewBox={`0 0 ${minimapWidth} ${minimapHeight}`}
+          className="block cursor-crosshair rounded border border-slate-300"
+          onMouseDown={(event) => {
+            event.stopPropagation()
+            minimapDraggingRef.current = true
+            panFromMinimapEvent(event)
+          }}
+          onMouseMove={(event) => {
+            if (minimapDraggingRef.current) panFromMinimapEvent(event)
+          }}
+          onMouseUp={() => {
+            minimapDraggingRef.current = false
+          }}
+          onMouseLeave={() => {
+            minimapDraggingRef.current = false
+          }}
+          onWheel={handleMinimapWheel}
+        >
+          <rect
+            x="0"
+            y="0"
+            width={minimapWidth}
+            height={minimapHeight}
+            rx="4"
+            fill={minimapColors.background}
+          />
+          {model.participants.map((participant) => {
+            const x = minimapX(xForParticipant(participant.id))
+            return (
+              <g key={`minimap-participant-${participant.id}`}>
+                <rect
+                  data-testid="sequence-minimap-participant"
+                  x={x - 8}
+                  y={minimapY(topY)}
+                  width="16"
+                  height="7"
+                  rx="1.5"
+                  fill={minimapColors.participant}
+                  stroke={minimapColors.participantStroke}
+                  strokeWidth="0.8"
+                />
+                <line
+                  x1={x}
+                  x2={x}
+                  y1={minimapY(lifelineTop)}
+                  y2={minimapY(bottomY)}
+                  stroke={minimapColors.line}
+                  strokeWidth="0.8"
+                  strokeDasharray="2 2"
+                />
+              </g>
+            )
+          })}
+          {model.messages.map((message, index) => {
+            const fromX = minimapX(xForParticipant(message.from))
+            const toX = minimapX(xForParticipant(message.to))
+            const y = minimapY(firstMessageY + index * messageGap)
+            const isReturn = message.arrow.includes('--')
+            return (
+              <line
+                key={`minimap-message-${message.id}`}
+                data-testid="sequence-minimap-message"
+                x1={fromX}
+                y1={y}
+                x2={toX}
+                y2={y}
+                stroke={minimapColors.message}
+                strokeWidth="1.2"
+                strokeDasharray={isReturn ? '2 2' : undefined}
+              />
+            )
+          })}
+          <rect
+            x={viewportRect.x}
+            y={viewportRect.y}
+            width={viewportRect.width}
+            height={viewportRect.height}
+            rx="2"
+            fill="none"
+            stroke={minimapColors.viewport}
+            strokeWidth="1.2"
+            strokeDasharray="3 2"
+          />
+        </svg>
+      </div>
+    </div>
+  )
+}
 
 function getAbsoluteNodePosition(node, allNodes) {
   const byId = new Map(allNodes.map((currentNode) => [currentNode.id, currentNode]))
@@ -426,42 +1495,81 @@ function EditorInner({
   const [highlightedCodeLine, setHighlightedCodeLine] = useState(null)
   const [codeScrollTop, setCodeScrollTop] = useState(0)
   const [addNodeShape, setAddNodeShape] = useState('rect')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchActiveIndex, setSearchActiveIndex] = useState(-1)
+  const [diagramMode, setDiagramMode] = useState('flowchart')
+  const [sequenceSvg, setSequenceSvg] = useState('')
+  const [selectedSequenceElement, setSelectedSequenceElement] = useState(null)
+  const [sequenceFocusRequestKey, setSequenceFocusRequestKey] = useState(0)
+  const [sequenceZoom, setSequenceZoom] = useState(1)
   const [codeLineMetrics, setCodeLineMetrics] = useState({
     lineHeight: 22,
     paddingTop: 16,
   })
-
-  // 스플리터 드래그 시 컨테이너 기준 좌표 계산용
   const containerRef = useRef(null)
   const codeTextareaRef = useRef(null)
   const codeHighlightTimerRef = useRef(null)
+  const nodeFlashTimerRef = useRef(null)
+  const sequencePreviewRef = useRef(null)
   const reactFlow = useReactFlow()
   const lastFocusedNodeIdRef = useRef(null)
   const pendingAddedNodePlacementRef = useRef(null)
 
-  // 핸들러에서 최신 상태를 읽기 위한 ref 미러
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
   nodesRef.current = nodes
   edgesRef.current = edges
 
-  // 비동기 파싱 경합 방지(최신 요청만 반영) + 디바운스
   const seqRef = useRef(0)
   const debounceRef = useRef(null)
 
-  // Code -> Canvas : mermaid 파서로 파싱 + dagre 배치
+  useEffect(() => {
+    return () => {
+      if (nodeFlashTimerRef.current) clearTimeout(nodeFlashTimerRef.current)
+    }
+  }, [])
+
   const runParse = (text) => {
     const seq = ++seqRef.current
+    if (isSequenceDiagram(text)) {
+      setDiagramMode('sequence')
+      setSearchQuery('')
+      setSearchActiveIndex(-1)
+      setNodes([])
+      setEdges([])
+      mermaid.initialize({
+        startOnLoad: false,
+        suppressErrorRendering: true,
+        theme: theme === 'dark' ? 'dark' : 'default',
+      })
+      mermaid
+        .render(`mermaid-sequence-${seq}`, text)
+        .then(({ svg }) => {
+          if (seq !== seqRef.current) return
+          setError(null)
+          setSequenceSvg(svg)
+        })
+        .catch((err) => {
+          if (seq !== seqRef.current) return
+          const message = err instanceof Error ? err.message : String(err)
+          setError(message)
+          setSequenceSvg('')
+        })
+      return
+    }
+
+    setDiagramMode('flowchart')
+    setSequenceSvg('')
+    setSelectedSequenceElement(null)
     convertMermaid(text, { fitNodeWidthToText }).then((res) => {
-      if (seq !== seqRef.current) return // 더 최신 입력이 있으면 폐기
+      if (seq !== seqRef.current) return
       if (res.error) {
-        setError(res.error) // 파싱 실패: 직전 그래프 유지, 에러만 표시
+        setError(res.error)
         return
       }
       setError(null)
       const groups = res.groups ?? []
 
-      // 노드 -> 소속 그룹 매핑 (한 노드는 첫 그룹에만 소속)
       const nodeToGroup = new Map()
       for (const g of groups) {
         for (const id of g.nodeIds) {
@@ -469,7 +1577,6 @@ function EditorInner({
         }
       }
 
-      // 그룹 박스 노드: 드래그 가능(자식 동반 이동), 멤버 노드 뒤(zIndex 0)
       const groupNodes = groups.map((g) => ({
         id: `__group_${g.id}`,
         type: 'group',
@@ -479,10 +1586,7 @@ function EditorInner({
         zIndex: 0,
       }))
 
-      // 멤버 노드는 그룹의 자식(parentId)으로 두고 좌표를 그룹 기준 상대좌표로 변환
-      // -> 그룹을 드래그하면 자식도 함께 이동, extent:'parent'로 박스 안에 유지
       const flowNodes = res.nodes.map((n) => {
-        // 모양별 크기를 style로 강제(커스텀 노드는 자동 크기라 명시 필요)
         const styled = {
           ...n,
           style: { width: n.width, height: n.height },
@@ -539,7 +1643,6 @@ function EditorInner({
     })
   }
 
-  // 초기 코드 1회 파싱
   useEffect(() => {
     runParse(code)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -556,13 +1659,16 @@ function EditorInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitNodeWidthToText])
 
-  // 코드 변경(타이핑/캔버스 동기화)을 상위 탭 상태로 올려 보존
+  useEffect(() => {
+    if (isSequenceDiagram(code)) runParse(code)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [theme])
+
   useEffect(() => {
     if (onCodeChange) onCodeChange(code)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code])
 
-  // 텍스트 입력 감지 -> 디바운스 후 파싱
   const handleCodeChange = (e) => {
     const text = e.target.value
     setCode(text)
@@ -570,8 +1676,6 @@ function EditorInner({
     debounceRef.current = setTimeout(() => runParse(text), 250)
   }
 
-  // Canvas -> Code : 현재 노드/선을 Mermaid 코드로 변환해 Textarea 갱신
-  // (그룹 박스 노드는 실제 노드가 아니므로 코드 변환에서 제외)
   const handleNodeLabelChange = (id, label) => {
     const nextCode = updateNodeLabelInMermaid(code, id, label)
     setCode(nextCode)
@@ -637,10 +1741,15 @@ function EditorInner({
     setCodeScrollTop(e.currentTarget.scrollTop)
   }
 
-  const focusDiagramNode = (id) => {
+  const focusDiagramNode = (id, { flash = false } = {}) => {
     const targetNode = nodesRef.current.find((node) => node.id === id)
     if (!targetNode) return
     lastFocusedNodeIdRef.current = id
+
+    if (nodeFlashTimerRef.current) {
+      clearTimeout(nodeFlashTimerRef.current)
+      nodeFlashTimerRef.current = null
+    }
 
     setNodes((currentNodes) =>
       currentNodes.map((currentNode) => ({
@@ -648,20 +1757,160 @@ function EditorInner({
         data: {
           ...currentNode.data,
           resizeSelected: currentNode.id === id,
+          codeFocusFlash: flash && currentNode.id === id,
         },
       })),
     )
 
+    if (flash) {
+      nodeFlashTimerRef.current = setTimeout(() => {
+        setNodes((currentNodes) =>
+          currentNodes.map((currentNode) =>
+            currentNode.data?.codeFocusFlash
+              ? {
+                  ...currentNode,
+                  data: { ...currentNode.data, codeFocusFlash: false },
+                }
+              : currentNode,
+          ),
+        )
+        nodeFlashTimerRef.current = null
+      }, 1600)
+    }
+
     const position = getAbsoluteNodePosition(targetNode, nodesRef.current)
     const width = Number(targetNode.width ?? targetNode.style?.width ?? 0)
     const height = Number(targetNode.height ?? targetNode.style?.height ?? 0)
+    const canvas = containerRef.current?.querySelector('.react-flow')
+    const canvasRect = canvas?.getBoundingClientRect()
+    if (!canvasRect || canvasRect.width === 0 || canvasRect.height === 0) return
+
     reactFlow.setCenter(position.x + width / 2, position.y + height / 2, {
       zoom: 1.2,
       duration: 350,
     })
   }
 
+  const clearSearchSelection = () => {
+    setSelectedSequenceElement(null)
+    setNodes((currentNodes) =>
+      currentNodes.map((node) => ({
+        ...node,
+        data: { ...node.data, resizeSelected: false },
+      })),
+    )
+  }
+
+  const getSearchMatches = (query, sourceNodes = nodesRef.current) => {
+    const term = query.trim().toLowerCase()
+    if (!term) return []
+
+    return sourceNodes.filter((node) => {
+      const id = String(node.data?.groupId ?? node.id).toLowerCase()
+      const label = String(node.data?.label ?? '').toLowerCase()
+      return id.includes(term) || label.includes(term)
+    })
+  }
+
+  const selectSearchMatch = (matches, index) => {
+    if (matches.length === 0) {
+      setSearchActiveIndex(-1)
+      clearSearchSelection()
+      return
+    }
+
+    const nextIndex = (index + matches.length) % matches.length
+    setSearchActiveIndex(nextIndex)
+    if (diagramMode === 'sequence') {
+      setSelectedSequenceElement(matches[nextIndex])
+      setSequenceFocusRequestKey((key) => key + 1)
+    } else {
+      focusDiagramNode(matches[nextIndex].id)
+    }
+  }
+
+  const handleSearchChange = (e) => {
+    const query = e.target.value
+    setSearchQuery(query)
+    const matches =
+      diagramMode === 'sequence'
+        ? getSequenceSearchMatches(query, parseSequenceEditorModel(code))
+        : getSearchMatches(query)
+    selectSearchMatch(matches, 0)
+  }
+
+  const goToSearchMatch = (offset) => {
+    const matches =
+      diagramMode === 'sequence'
+        ? getSequenceSearchMatches(searchQuery, parseSequenceEditorModel(code))
+        : getSearchMatches(searchQuery)
+    selectSearchMatch(
+      matches,
+      searchActiveIndex < 0 ? 0 : searchActiveIndex + offset,
+    )
+  }
+
+  const handleSearchKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      goToSearchMatch(e.shiftKey ? -1 : 1)
+    } else if (e.key === 'Escape') {
+      setSearchQuery('')
+      setSearchActiveIndex(-1)
+      clearSearchSelection()
+    }
+  }
+
+  const selectSequenceElement = (
+    element,
+    { syncCode = true, focusDiagram = false } = {},
+  ) => {
+    if (!element) return
+    setSelectedSequenceElement(element)
+    if (focusDiagram) setSequenceFocusRequestKey((key) => key + 1)
+    if (!syncCode || element.lineIndex === null || element.lineIndex === undefined) return
+
+    const textarea = codeTextareaRef.current
+    if (!textarea) return
+
+    const location = lineBoundsAtIndex(code, element.lineIndex)
+    const styles = window.getComputedStyle(textarea)
+    const fontSize = Number.parseFloat(styles.fontSize) || 14
+    const lineHeight = Number.parseFloat(styles.lineHeight) || fontSize * 1.625
+    const paddingTop = Number.parseFloat(styles.paddingTop) || 0
+    const nextScrollTop = scrollTopForLine({
+      line: element.lineIndex,
+      lineHeight,
+      paddingTop,
+      clientHeight: textarea.clientHeight,
+      scrollHeight: textarea.scrollHeight,
+    })
+
+    textarea.focus()
+    textarea.setSelectionRange(location.start, location.end)
+    textarea.scrollTop = nextScrollTop
+    setCodeLineMetrics({ lineHeight, paddingTop })
+    setCodeScrollTop(nextScrollTop)
+
+    requestAnimationFrame(() => {
+      setHighlightedCodeLine({ line: element.lineIndex, key: Date.now() })
+    })
+
+    if (codeHighlightTimerRef.current) clearTimeout(codeHighlightTimerRef.current)
+    codeHighlightTimerRef.current = setTimeout(() => {
+      setHighlightedCodeLine(null)
+      codeHighlightTimerRef.current = null
+    }, 1800)
+  }
+
   const handleCodeClick = (e) => {
+    if (diagramMode === 'sequence') {
+      const lineIndex = lineIndexAtOffset(code, e.currentTarget.selectionStart)
+      const element = findSequenceElementAtLine(code, lineIndex)
+      if (element) selectSequenceElement(element, { syncCode: false, focusDiagram: true })
+      return
+    }
+
     const target = findMermaidElementAtOffset(
       code,
       e.currentTarget.selectionStart,
@@ -672,7 +1921,7 @@ function EditorInner({
         label: node.data?.label,
       })),
     )
-    if (target) focusDiagramNode(target.id)
+    if (target) focusDiagramNode(target.id, { flash: true })
   }
 
   const handleCanvasNodeClick = (_event, node) => {
@@ -736,7 +1985,6 @@ function EditorInner({
     )
   }
 
-  // 새 화살표 연결 -> 엣지 추가 후 코드 갱신
   const onConnect = (params) => {
     const nextCode = addEdgeToMermaid(code, {
       source: params.source,
@@ -752,7 +2000,7 @@ function EditorInner({
     )
     const result = addNodeToMermaidWithId(code, {
       shape: addNodeShape,
-      label: '새 노드',
+      label: 'New node',
       ...(anchorNode?.type !== 'group' ? { anchorNodeId: anchorNode?.id } : {}),
     })
     if (anchorNode) {
@@ -782,14 +2030,10 @@ function EditorInner({
     runParse(nextCode)
   }
 
-  // 노드 드래그 종료 -> 코드 갱신
-  // 단, subgraph(그룹)가 있으면 코드 역생성이 subgraph를 평탄화하므로 생략
-  // (노드 위치는 Mermaid 문법에 없어 드래그만으로 코드가 바뀔 이유도 없음)
   const onNodeDragStop = () => {
     // Mermaid flowchart syntax does not persist freeform canvas positions.
   }
 
-  // 스플리터 드래그 -> 왼쪽 패널 너비 조절
   const onSplitterMouseDown = (e) => {
     e.preventDefault()
     const onMove = (ev) => {
@@ -812,8 +2056,26 @@ function EditorInner({
     window.addEventListener('mouseup', onUp)
   }
 
-  // 현재 캔버스를 PNG/SVG 이미지로 내보내기 (노드 영역에 맞춰 캡처)
   const exportImage = async (type) => {
+    if (diagramMode === 'sequence') {
+      if (type === 'svg' && sequenceSvg) {
+        const url = URL.createObjectURL(
+          new Blob([sequenceSvg], { type: 'image/svg+xml' }),
+        )
+        triggerDownload(url, 'diagram.svg')
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+        return
+      }
+
+      if (sequencePreviewRef.current) {
+        const dataUrl = await toPng(sequencePreviewRef.current, {
+          backgroundColor: theme === 'dark' ? '#0f172a' : '#ffffff',
+        })
+        triggerDownload(dataUrl, 'diagram.png')
+      }
+      return
+    }
+
     const viewport = document.querySelector('.react-flow__viewport')
     const all = nodesRef.current
     if (!viewport || all.length === 0) return
@@ -837,7 +2099,7 @@ function EditorInner({
     try {
       await navigator.clipboard.writeText(code)
     } catch {
-      /* 클립보드 권한 없음 등 무시 */
+
     }
   }
 
@@ -847,7 +2109,6 @@ function EditorInner({
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
-  // ---- Undo/Redo (코드 편집 히스토리) ----
   const historyRef = useRef([code])
   const indexRef = useRef(0)
   const isUndoRedoRef = useRef(false)
@@ -861,7 +2122,7 @@ function EditorInner({
     const hist = historyRef.current
     if (hist[indexRef.current] === code) return
     const now = Date.now()
-    const coalesce = now - lastEditTimeRef.current < 600 // 빠른 타이핑은 한 단계로 합침
+    const coalesce = now - lastEditTimeRef.current < 600
     lastEditTimeRef.current = now
     const next = hist.slice(0, indexRef.current + 1)
     if (coalesce && next.length > 1) {
@@ -874,8 +2135,6 @@ function EditorInner({
     indexRef.current = next.length - 1
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code])
-
-  // 코드를 프로그램적으로 적용(템플릿/방향/undo) → 즉시 재파싱
   const applyCodeAndParse = (text) => {
     setCode(text)
     runParse(text)
@@ -896,7 +2155,6 @@ function EditorInner({
     }
   }
 
-  // 텍스트영역 단축키: Ctrl+Z / Ctrl+Y(또는 Ctrl+Shift+Z)
   const onCodeKeyDown = (e) => {
     const mod = e.ctrlKey || e.metaKey
     const k = e.key.toLowerCase()
@@ -909,7 +2167,6 @@ function EditorInner({
     }
   }
 
-  // 레이아웃 방향 TD <-> LR 토글 (코드 헤더 변경)
   const toggleDirection = () => {
     const re = /^(\s*(?:graph|flowchart)\s+)(TB|TD|LR|RL|BT)\b/i
     const m = code.match(re)
@@ -922,25 +2179,106 @@ function EditorInner({
     if (TEMPLATES[key]) applyCodeAndParse(TEMPLATES[key])
   }
 
+  const handleAddSequenceParticipant = () => {
+    const nextCode = addSequenceParticipant(code)
+    const beforeIds = new Set(
+      parseSequenceEditorModel(code).participants.map((participant) => participant.id),
+    )
+    const added = parseSequenceEditorModel(nextCode).participants.find(
+      (participant) => !beforeIds.has(participant.id),
+    )
+    if (added) {
+      setSelectedSequenceElement({
+        type: 'participant',
+        id: added.id,
+        label: added.label,
+        lineIndex: added.lineIndex,
+      })
+    }
+    applyCodeAndParse(nextCode)
+  }
+
+  const handleAddSequenceMessage = () => {
+    const model = parseSequenceEditorModel(code)
+    if (model.participants.length < 2) return
+
+    const selected =
+      selectedSequenceElement?.type === 'participant'
+        ? model.participants.find(
+            (participant) => participant.id === selectedSequenceElement.id,
+          )
+        : null
+    const source = selected ?? model.participants[0]
+    const selectedIndex = model.participants.findIndex(
+      (participant) => participant.id === source.id,
+    )
+    const target =
+      model.participants[selectedIndex + 1] ??
+      model.participants.find((participant) => participant.id !== source.id)
+    if (!target) return
+
+    applyCodeAndParse(addSequenceMessage(code, source.id, target.id))
+  }
+
+  const moveSelectedSequenceParticipant = (offset) => {
+    const model = parseSequenceEditorModel(code)
+    if (selectedSequenceElement?.type !== 'participant') return
+    const selectedIndex = model.participants.findIndex(
+      (participant) => participant.id === selectedSequenceElement.id,
+    )
+    if (selectedIndex < 0) return
+
+    const targetIndex = Math.max(
+      0,
+      Math.min(model.participants.length - 1, selectedIndex + offset),
+    )
+    if (targetIndex === selectedIndex) return
+
+    const selectedId = model.participants[selectedIndex].id
+    setSelectedSequenceElement({
+      type: 'participant',
+      id: selectedId,
+      label: model.participants[selectedIndex].label,
+      lineIndex: model.participants[selectedIndex].lineIndex,
+    })
+    applyCodeAndParse(moveSequenceParticipant(code, selectedId, targetIndex))
+  }
+
   const btnClass =
     'rounded-md border border-slate-300 bg-white/90 px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm hover:bg-white'
   const shapeBtnClass = (shape) =>
     shape === addNodeShape
       ? 'flex h-8 w-8 items-center justify-center rounded-md border border-blue-500 bg-blue-50 text-sm font-semibold text-blue-700 shadow-sm ring-2 ring-blue-500'
       : 'flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-white/90 text-sm font-semibold text-slate-700 shadow-sm hover:bg-white'
+  const sequenceModel =
+    diagramMode === 'sequence'
+      ? parseSequenceEditorModel(code)
+      : { participants: [], messages: [] }
+  const searchMatches =
+    diagramMode === 'sequence'
+      ? getSequenceSearchMatches(searchQuery, sequenceModel)
+      : getSearchMatches(searchQuery, nodes)
+  const searchStatus = searchQuery.trim()
+    ? searchMatches.length > 0 && searchActiveIndex >= 0
+      ? `${Math.min(searchActiveIndex + 1, searchMatches.length)}/${searchMatches.length}`
+      : `0/${searchMatches.length}`
+    : ''
+  const selectedSequenceIndex = sequenceModel.participants.findIndex(
+    (participant) =>
+      selectedSequenceElement?.type === 'participant' &&
+      participant.id === selectedSequenceElement.id,
+  )
 
   return (
-    <div ref={containerRef} className="flex h-full w-full">
-      {/* 왼쪽: Mermaid 코드 에디터 */}
+    <div ref={containerRef} className="flex h-full w-full overflow-hidden">
       <div
         style={{ width: leftWidth }}
         className="flex shrink-0 flex-col bg-slate-900 text-slate-100"
       >
         <div className="flex items-center justify-between border-b border-slate-700 px-4 py-2.5">
-          <h1 className="text-sm font-semibold tracking-tight">Mermaid 코드</h1>
-          <span className="text-xs text-slate-400">flowchart (mermaid 파서)</span>
+          <h1 className="text-sm font-semibold tracking-tight">Mermaid code</h1>
+          <span className="text-xs text-slate-400">flowchart / sequence</span>
         </div>
-        {/* 코드 편의 툴바: 예제 / 방향 / undo-redo */}
         <div className="flex items-center gap-1 border-b border-slate-700 bg-slate-800/60 px-2 py-1">
           <select
             value=""
@@ -948,37 +2286,38 @@ function EditorInner({
               if (e.target.value) insertTemplate(e.target.value)
             }}
             className="rounded bg-slate-700 px-1.5 py-1 text-xs text-slate-200 outline-none"
-            title="예제 템플릿 삽입"
+            title="Insert example template"
           >
-            <option value="">예제 삽입…</option>
-            <option value="basic">기본 플로우차트</option>
-            <option value="decision">조건 분기</option>
-            <option value="subgraph">서브그래프</option>
-            <option value="shapes">도형 모음</option>
+            <option value="">Insert example...</option>
+            <option value="basic">Basic flowchart</option>
+            <option value="decision">Decision branch</option>
+            <option value="subgraph">Subgraph</option>
+            <option value="shapes">Shapes</option>
+            <option value="sequence">Sequence diagram</option>
           </select>
           <button
             type="button"
             onClick={toggleDirection}
             className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
-            title="레이아웃 방향 TD↔LR"
+            title="Toggle flowchart direction"
           >
-            ⇄ 방향
+            Direction
           </button>
           <button
             type="button"
             onClick={undo}
             className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
-            title="실행 취소 (Ctrl+Z)"
+            title="Undo (Ctrl+Z)"
           >
-            ↩ Undo
+            Undo
           </button>
           <button
             type="button"
             onClick={redo}
             className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
-            title="다시 실행 (Ctrl+Y)"
+            title="Redo (Ctrl+Y)"
           >
-            ↪ Redo
+            Redo
           </button>
         </div>
         <div className="relative min-h-0 flex-1">
@@ -992,7 +2331,7 @@ function EditorInner({
           spellCheck={false}
           wrap="off"
           className="code-editor-textarea h-full w-full resize-none bg-slate-900 p-4 font-mono text-sm leading-relaxed text-slate-100 outline-none"
-          placeholder={'graph TD\n  A[시작] --> B[종료]'}
+          placeholder={'graph TD\\n  A[Start] --> B[End]'}
         />
           {highlightedCodeLine && (
             <div
@@ -1010,133 +2349,327 @@ function EditorInner({
         </div>
         {error && (
           <div className="border-t border-red-800 bg-red-950/80 px-4 py-2 font-mono text-xs text-red-300">
-            ⚠ {error}
+            {error}
           </div>
         )}
       </div>
 
-      {/* 가운데: 드래그 스플리터 */}
       <div
         onMouseDown={onSplitterMouseDown}
-        title="드래그하여 패널 크기 조절"
+        title="Drag to resize panels"
         className="group flex w-2.5 shrink-0 cursor-col-resize items-center justify-center bg-slate-600 transition-colors hover:bg-blue-500"
       >
         <div className="h-10 w-1 rounded-full bg-slate-300 group-hover:bg-white" />
       </div>
 
-      {/* 오른쪽: React Flow 비주얼 캔버스 */}
       <div
-        className={`relative flex-1 ${theme === 'dark' ? 'bg-slate-900' : 'bg-slate-50'}`}
+        data-testid="diagram-pane"
+        className={`relative flex min-w-0 flex-1 flex-col overflow-hidden ${
+          theme === 'dark' ? 'bg-slate-900' : 'bg-slate-50'
+        }`}
       >
-        <div className="absolute left-3 top-3 z-10 flex flex-wrap items-center gap-1 rounded-md border border-slate-300 bg-white/90 p-1 shadow-sm">
-          {ADD_NODE_SHAPES.map((shape) => (
-            <button
-              key={shape.key}
-              type="button"
-              aria-label={shape.label}
-              title={shape.label}
-              aria-pressed={addNodeShape === shape.key}
-              onClick={() => setAddNodeShape(shape.key)}
-              className={shapeBtnClass(shape.key)}
-            >
-              {shape.icon}
-            </button>
-          ))}
-          <button
-            type="button"
-            aria-label="노드 추가"
-            onClick={handleAddNode}
-            className={btnClass}
-          >
-            + 노드 추가
-          </button>
-        </div>
-
-        {/* 툴바: 내보내기 / 테마 / 격자 토글 */}
-        <div className="absolute right-3 top-3 z-10 flex flex-wrap justify-end gap-2">
-          <button type="button" onClick={() => exportImage('png')} className={btnClass}>
-            🖼 PNG
-          </button>
-          <button type="button" onClick={() => exportImage('svg')} className={btnClass}>
-            🖼 SVG
-          </button>
-          <button type="button" onClick={exportMmd} className={btnClass}>
-            💾 .mmd
-          </button>
-          <button type="button" onClick={copyCode} className={btnClass}>
-            📋 복사
-          </button>
-          <button
-            type="button"
-            onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
-            className={btnClass}
-          >
-            {theme === 'light' ? '🌙 다크' : '☀️ 라이트'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowGrid((g) => !g)}
-            className={btnClass}
-          >
-            {showGrid ? '⊞ 격자 끄기' : '⊞ 격자 켜기'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setFitNodeWidthToText((v) => !v)}
-            aria-pressed={fitNodeWidthToText}
-            className={
-              fitNodeWidthToText
-                ? 'rounded-md border border-blue-500 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 shadow-sm ring-2 ring-blue-500 hover:bg-blue-50'
-                : btnClass
-            }
-            title="도형 가로 길이를 텍스트에 맞춥니다"
-          >
-            {fitNodeWidthToText ? '너비 맞춤 ON' : '너비 맞춤 OFF'}
-          </button>
-        </div>
-
-        <NodeLabelChangeContext.Provider value={handleNodeLabelChange}>
-          <NodeSizeChangeContext.Provider value={handleNodeSizeChange}>
-            <GroupSizeChangeContext.Provider value={handleGroupSizeChange}>
-              <EdgeLabelChangeContext.Provider value={handleEdgeLabelChange}>
-              <ReactFlow
-                colorMode={theme}
-                nodes={nodes}
-                edges={edges}
-                nodeTypes={nodeTypes}
-                edgeTypes={edgeTypes}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                onConnect={onConnect}
-                onDelete={onDelete}
-                onNodeClick={handleCanvasNodeClick}
-                onPaneClick={handlePaneClick}
-                onNodeDragStop={onNodeDragStop}
-                deleteKeyCode={['Backspace', 'Delete']}
-                fitView
-                fitViewOptions={{ padding: 0.2 }}
-                proOptions={{ hideAttribution: true }}
+        <div
+          className={`flex flex-wrap items-center gap-2 border-b p-2 ${
+            theme === 'dark'
+              ? 'border-slate-700 bg-slate-800/80'
+              : 'border-slate-200 bg-white/90'
+          }`}
+        >
+          {diagramMode !== 'sequence' && (
+          <>
+          <div className="flex flex-wrap items-center gap-1 rounded-md border border-slate-300 bg-white/90 p-1 shadow-sm">
+            {ADD_NODE_SHAPES.map((shape) => (
+              <button
+                key={shape.key}
+                type="button"
+                aria-label={shape.label}
+                title={shape.label}
+                aria-pressed={addNodeShape === shape.key}
+                onClick={() => setAddNodeShape(shape.key)}
+                className={shapeBtnClass(shape.key)}
               >
-                {showGrid && (
-                  <Background
-                    variant={BackgroundVariant.Lines}
-                    gap={20}
-                    color={theme === 'dark' ? '#334155' : '#e2e8f0'}
-                  />
-                )}
-                <Controls showInteractive={false} />
-                <MiniMap pannable zoomable />
-              </ReactFlow>
-              </EdgeLabelChangeContext.Provider>
-            </GroupSizeChangeContext.Provider>
-          </NodeSizeChangeContext.Provider>
-        </NodeLabelChangeContext.Provider>
+                {shape.icon}
+              </button>
+            ))}
+            <button
+              type="button"
+              aria-label="Add node"
+              onClick={handleAddNode}
+              className={btnClass}
+            >
+              + Add node
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1 rounded-md border border-slate-300 bg-white/90 p-1 shadow-sm">
+            <input
+              type="search"
+              aria-label="Search nodes"
+              value={searchQuery}
+              onChange={handleSearchChange}
+              onKeyDown={handleSearchKeyDown}
+              placeholder="Search nodes"
+              className="h-8 w-44 rounded border border-slate-300 bg-white px-2 text-xs text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+            />
+            <span className="min-w-8 text-center text-xs tabular-nums text-slate-600">
+              {searchStatus}
+            </span>
+            <button
+              type="button"
+              onClick={() => goToSearchMatch(-1)}
+              disabled={searchMatches.length === 0}
+              className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
+              title="Previous match"
+            >
+              Prev
+            </button>
+            <button
+              type="button"
+              onClick={() => goToSearchMatch(1)}
+              disabled={searchMatches.length === 0}
+              className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
+              title="Next match"
+            >
+              Next
+            </button>
+          </div>
+
+          </>
+          )}
+
+          {diagramMode === 'sequence' && (
+            <div className="flex flex-wrap items-center gap-1 rounded-md border border-slate-300 bg-white/90 p-1 shadow-sm">
+              <input
+                type="search"
+                aria-label="Search sequence"
+                value={searchQuery}
+                onChange={handleSearchChange}
+                onKeyDown={handleSearchKeyDown}
+                placeholder="Search sequence"
+                className="h-8 w-44 rounded border border-slate-300 bg-white px-2 text-xs text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+              />
+              <span className="min-w-8 text-center text-xs tabular-nums text-slate-600">
+                {searchStatus}
+              </span>
+              <button
+                type="button"
+                onClick={() => goToSearchMatch(-1)}
+                disabled={searchMatches.length === 0}
+                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
+                title="Previous match"
+              >
+                Prev
+              </button>
+              <button
+                type="button"
+                onClick={() => goToSearchMatch(1)}
+                disabled={searchMatches.length === 0}
+                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
+                title="Next match"
+              >
+                Next
+              </button>
+              <button
+                type="button"
+                aria-label="Add participant"
+                onClick={handleAddSequenceParticipant}
+                className={btnClass}
+              >
+                + Participant
+              </button>
+              <button
+                type="button"
+                aria-label="Add message"
+                onClick={handleAddSequenceMessage}
+                disabled={sequenceModel.participants.length < 2}
+                className={`${btnClass} disabled:opacity-40`}
+              >
+                + Message
+              </button>
+              <button
+                type="button"
+                aria-label="Move participant left"
+                onClick={() => moveSelectedSequenceParticipant(-1)}
+                disabled={selectedSequenceIndex <= 0}
+                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
+                title="Move participant left"
+              >
+                &lt;
+              </button>
+              <button
+                type="button"
+                aria-label="Move participant right"
+                onClick={() => moveSelectedSequenceParticipant(1)}
+                disabled={
+                  selectedSequenceIndex < 0 ||
+                  selectedSequenceIndex >= sequenceModel.participants.length - 1
+                }
+                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
+                title="Move participant right"
+              >
+                &gt;
+              </button>
+              <button
+                type="button"
+                aria-label="Zoom out sequence"
+                onClick={() =>
+                  setSequenceZoom((zoom) => Math.max(0.5, +(zoom - 0.1).toFixed(2)))
+                }
+                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700"
+                title="Zoom out sequence"
+              >
+                -
+              </button>
+              <button
+                type="button"
+                aria-label="Reset sequence zoom"
+                onClick={() => setSequenceZoom(1)}
+                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700"
+                title="Reset sequence zoom"
+              >
+                {Math.round(sequenceZoom * 100)}%
+              </button>
+              <button
+                type="button"
+                aria-label="Zoom in sequence"
+                onClick={() =>
+                  setSequenceZoom((zoom) => Math.min(2, +(zoom + 0.1).toFixed(2)))
+                }
+                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700"
+                title="Zoom in sequence"
+              >
+                +
+              </button>
+            </div>
+          )}
+
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            <button type="button" onClick={() => exportImage('png')} className={btnClass}>
+              PNG
+            </button>
+            <button type="button" onClick={() => exportImage('svg')} className={btnClass}>
+              SVG
+            </button>
+            <button type="button" onClick={exportMmd} className={btnClass}>
+              .mmd
+            </button>
+            <button type="button" onClick={copyCode} className={btnClass}>
+              Copy
+            </button>
+            <button
+              type="button"
+              onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
+              className={btnClass}
+            >
+              {theme === 'light' ? 'Dark' : 'Light'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowGrid((g) => !g)}
+              className={btnClass}
+            >
+              {showGrid ? 'Grid off' : 'Grid on'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setFitNodeWidthToText((v) => !v)}
+              aria-pressed={fitNodeWidthToText}
+              className={
+                fitNodeWidthToText
+                  ? 'rounded-md border border-blue-500 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 shadow-sm ring-2 ring-blue-500 hover:bg-blue-50'
+                  : btnClass
+              }
+              title="Fit node width to text"
+            >
+              {fitNodeWidthToText ? 'Fit width ON' : 'Fit width OFF'}
+            </button>
+          </div>
+        </div>
+
+        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+        {diagramMode === 'sequence' ? (
+          <div
+            ref={sequencePreviewRef}
+            data-testid="mermaid-sequence-preview"
+            className="h-full w-full overflow-hidden"
+          >
+            <SequenceCanvas
+              code={code}
+              sequenceSvg={sequenceSvg}
+              theme={theme}
+              selectedElement={selectedSequenceElement}
+              focusRequestKey={sequenceFocusRequestKey}
+              zoom={sequenceZoom}
+              onSelectElement={selectSequenceElement}
+              onRenameParticipant={(participantId, label) => {
+                applyCodeAndParse(renameSequenceParticipant(code, participantId, label))
+              }}
+              onUpdateMessage={(lineIndex, label) => {
+                applyCodeAndParse(updateSequenceMessageLabel(code, lineIndex, label))
+              }}
+              onMoveParticipant={(participantId, targetIndex) => {
+                const participant = parseSequenceEditorModel(code).participants.find(
+                  (current) => current.id === participantId,
+                )
+                if (participant) {
+                  setSelectedSequenceElement({
+                    type: 'participant',
+                    id: participant.id,
+                    label: participant.label,
+                    lineIndex: participant.lineIndex,
+                  })
+                }
+                applyCodeAndParse(
+                  moveSequenceParticipant(code, participantId, targetIndex),
+                )
+              }}
+              onZoomChange={setSequenceZoom}
+            />
+          </div>
+        ) : (
+          <NodeLabelChangeContext.Provider value={handleNodeLabelChange}>
+            <NodeSizeChangeContext.Provider value={handleNodeSizeChange}>
+              <GroupSizeChangeContext.Provider value={handleGroupSizeChange}>
+                <EdgeLabelChangeContext.Provider value={handleEdgeLabelChange}>
+                <ReactFlow
+                  colorMode={theme}
+                  nodes={nodes}
+                  edges={edges}
+                  nodeTypes={nodeTypes}
+                  edgeTypes={edgeTypes}
+                  onNodesChange={onNodesChange}
+                  onEdgesChange={onEdgesChange}
+                  onConnect={onConnect}
+                  onDelete={onDelete}
+                  onNodeClick={handleCanvasNodeClick}
+                  onPaneClick={handlePaneClick}
+                  onNodeDragStop={onNodeDragStop}
+                  deleteKeyCode={['Backspace', 'Delete']}
+                  fitView
+                  fitViewOptions={{ padding: 0.2 }}
+                  proOptions={{ hideAttribution: true }}
+                >
+                  {showGrid && (
+                    <Background
+                      variant={BackgroundVariant.Lines}
+                      gap={20}
+                      color={theme === 'dark' ? '#334155' : '#e2e8f0'}
+                    />
+                  )}
+                  <Controls showInteractive={false} />
+                  <MiniMap pannable zoomable />
+                </ReactFlow>
+                </EdgeLabelChangeContext.Provider>
+              </GroupSizeChangeContext.Provider>
+            </NodeSizeChangeContext.Provider>
+          </NodeLabelChangeContext.Provider>
+        )}
+        </div>
       </div>
     </div>
   )
 }
 
-// 상단 탭 바: 여러 Mermaid 다이어그램을 탭으로 전환 (더블클릭으로 이름 변경)
 function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename, onReorder, right }) {
   const [editingId, setEditingId] = useState(null)
   const [draft, setDraft] = useState('')
@@ -1146,34 +2679,35 @@ function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename, onReorder,
     if (editingId !== null) inputRef.current?.select()
   }, [editingId])
 
-  const startEdit = (t) => {
-    setEditingId(t.id)
-    setDraft(t.name)
+  const startEdit = (tab) => {
+    setEditingId(tab.id)
+    setDraft(tab.name)
   }
+
   const commit = () => {
-    if (editingId !== null) onRename(editingId, draft.trim() || '제목 없음')
+    if (editingId !== null) onRename(editingId, draft.trim() || 'Diagram')
     setEditingId(null)
   }
 
   return (
     <div className="flex items-stretch gap-1 border-b border-slate-700 bg-slate-800 px-2 pt-1.5">
-      {tabs.map((t) => {
-        const active = t.id === activeId
-        const editing = editingId === t.id
+      {tabs.map((tab) => {
+        const active = tab.id === activeId
+        const editing = editingId === tab.id
         return (
           <div
-            key={t.id}
-            onClick={() => onSelect(t.id)}
-            onDoubleClick={() => startEdit(t)}
+            key={tab.id}
+            onClick={() => onSelect(tab.id)}
+            onDoubleClick={() => startEdit(tab)}
             draggable={!editing}
-            onDragStart={(e) => e.dataTransfer.setData('text/plain', String(t.id))}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault()
-              const from = Number(e.dataTransfer.getData('text/plain'))
-              if (!Number.isNaN(from)) onReorder(from, t.id)
+            onDragStart={(event) => event.dataTransfer.setData('text/plain', String(tab.id))}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault()
+              const from = Number(event.dataTransfer.getData('text/plain'))
+              if (!Number.isNaN(from)) onReorder(from, tab.id)
             }}
-            title="더블클릭하여 이름 변경 · 드래그하여 순서 변경"
+            title="Double-click to rename"
             className={`group flex cursor-pointer items-center gap-2 rounded-t-md px-3 py-1.5 text-sm ${
               active
                 ? 'bg-slate-900 text-slate-100'
@@ -1184,29 +2718,29 @@ function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename, onReorder,
               <input
                 ref={inputRef}
                 value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onClick={(e) => e.stopPropagation()}
+                onChange={(event) => setDraft(event.target.value)}
+                onClick={(event) => event.stopPropagation()}
                 onBlur={commit}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commit()
-                  else if (e.key === 'Escape') setEditingId(null)
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') commit()
+                  else if (event.key === 'Escape') setEditingId(null)
                 }}
                 className="w-28 rounded bg-slate-700 px-1 text-sm text-slate-100 outline-none ring-1 ring-blue-500"
               />
             ) : (
-              <span className="max-w-[160px] truncate">{t.name}</span>
+              <span className="max-w-[160px] truncate">{tab.name}</span>
             )}
             {tabs.length > 1 && !editing && (
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onClose(t.id)
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onClose(tab.id)
                 }}
                 className="rounded text-slate-400 hover:bg-slate-600 hover:text-white"
-                title="탭 닫기"
+                title="Close tab"
               >
-                <span className="px-1">×</span>
+                <span className="px-1">x</span>
               </button>
             )}
           </div>
@@ -1215,7 +2749,7 @@ function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename, onReorder,
       <button
         type="button"
         onClick={onAdd}
-        title="새 다이어그램 탭"
+        title="Add diagram tab"
         className="ml-1 self-center rounded px-2 py-1 text-lg leading-none text-slate-300 hover:bg-slate-700 hover:text-white"
       >
         +
@@ -1227,12 +2761,10 @@ function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename, onReorder,
   )
 }
 
-const NEW_TAB_CODE = 'graph TD\n  A[시작] --> B[종료]'
-
-// ---- 워크스페이스 영속성(localStorage) ----
+const NEW_TAB_CODE = 'graph TD\n  A[Start] --> B[End]'
 const STORAGE_KEY = 'mermaid-gilview-workspace'
 const DEFAULT_WORKSPACE = {
-  tabs: [{ id: 1, name: '다이어그램 1', code: INITIAL_CODE }],
+  tabs: [{ id: 1, name: 'Diagram 1', code: INITIAL_CODE }],
   activeId: 1,
   settings: { theme: 'light', showGrid: true, fitNodeWidthToText: false, leftWidth: 440 },
 }
@@ -1256,16 +2788,13 @@ function loadWorkspace() {
 }
 
 export default function MermaidVisualEditor() {
-  // 최초 1회만 localStorage 로드
   const initialRef = useRef(null)
   if (initialRef.current === null) initialRef.current = loadWorkspace()
   const init = initialRef.current
 
-  const idRef = useRef(Math.max(0, ...init.tabs.map((t) => t.id)) + 1)
+  const idRef = useRef(Math.max(0, ...init.tabs.map((tab) => tab.id)) + 1)
   const [tabs, setTabs] = useState(init.tabs)
   const [activeId, setActiveId] = useState(init.activeId)
-
-  // 설정(테마/격자/패널폭)은 앱 레벨 — 탭 전환에도 유지 + 저장
   const [theme, setTheme] = useState(init.settings.theme)
   const [showGrid, setShowGrid] = useState(init.settings.showGrid)
   const [fitNodeWidthToText, setFitNodeWidthToText] = useState(
@@ -1273,7 +2802,6 @@ export default function MermaidVisualEditor() {
   )
   const [leftWidth, setLeftWidth] = useState(init.settings.leftWidth)
 
-  // 변경 시 디바운스 자동 저장
   const saveTimer = useRef(null)
   useEffect(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current)
@@ -1289,35 +2817,38 @@ export default function MermaidVisualEditor() {
           }),
         )
       } catch {
-        /* 용량 초과 등은 무시 */
+        // Ignore localStorage quota or browser privacy errors.
       }
     }, 400)
     return () => saveTimer.current && clearTimeout(saveTimer.current)
   }, [tabs, activeId, theme, showGrid, fitNodeWidthToText, leftWidth])
 
-  const active = tabs.find((t) => t.id === activeId) ?? tabs[0]
+  const active = tabs.find((tab) => tab.id === activeId) ?? tabs[0]
 
   const updateActiveCode = (code) => {
-    setTabs((ts) => ts.map((t) => (t.id === activeId ? { ...t, code } : t)))
+    setTabs((currentTabs) =>
+      currentTabs.map((tab) => (tab.id === activeId ? { ...tab, code } : tab)),
+    )
   }
 
   const renameTab = (id, name) => {
-    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, name } : t)))
+    setTabs((currentTabs) =>
+      currentTabs.map((tab) => (tab.id === id ? { ...tab, name } : tab)),
+    )
   }
 
   const reorderTabs = (fromId, toId) => {
-    setTabs((ts) => {
-      const from = ts.findIndex((t) => t.id === fromId)
-      const to = ts.findIndex((t) => t.id === toId)
-      if (from < 0 || to < 0 || from === to) return ts
-      const next = [...ts]
+    setTabs((currentTabs) => {
+      const from = currentTabs.findIndex((tab) => tab.id === fromId)
+      const to = currentTabs.findIndex((tab) => tab.id === toId)
+      if (from < 0 || to < 0 || from === to) return currentTabs
+      const next = [...currentTabs]
       const [moved] = next.splice(from, 1)
       next.splice(to, 0, moved)
       return next
     })
   }
 
-  // .mmd/.txt 파일을 새 탭으로 가져오기
   const mmdInputRef = useRef(null)
   const jsonInputRef = useRef(null)
 
@@ -1325,14 +2856,13 @@ export default function MermaidVisualEditor() {
     const reader = new FileReader()
     reader.onload = () => {
       const id = idRef.current++
-      const name = file.name.replace(/\.(mmd|md|txt)$/i, '') || `다이어그램 ${tabs.length + 1}`
-      setTabs((ts) => [...ts, { id, name, code: String(reader.result) }])
+      const name = file.name.replace(/\.(mmd|md|txt)$/i, '') || `Diagram ${tabs.length + 1}`
+      setTabs((currentTabs) => [...currentTabs, { id, name, code: String(reader.result) }])
       setActiveId(id)
     }
     reader.readAsText(file)
   }
 
-  // 전체 워크스페이스(모든 탭 + 설정) JSON 백업/복원
   const backupWorkspace = () => {
     const data = {
       version: 1,
@@ -1353,7 +2883,7 @@ export default function MermaidVisualEditor() {
       try {
         const data = JSON.parse(String(reader.result))
         if (!Array.isArray(data.tabs) || data.tabs.length === 0) return
-        if (!window.confirm('현재 워크스페이스를 백업 파일로 교체할까요?')) return
+        if (!window.confirm('Replace the current workspace with the backup file?')) return
         setTabs(data.tabs)
         setActiveId(data.activeId ?? data.tabs[0].id)
         if (data.settings) {
@@ -1364,9 +2894,9 @@ export default function MermaidVisualEditor() {
           )
           setLeftWidth(data.settings.leftWidth ?? leftWidth)
         }
-        idRef.current = Math.max(0, ...data.tabs.map((t) => t.id)) + 1
+        idRef.current = Math.max(0, ...data.tabs.map((tab) => tab.id)) + 1
       } catch {
-        window.alert('백업 파일을 읽을 수 없습니다.')
+        window.alert('Could not read the backup file.')
       }
     }
     reader.readAsText(file)
@@ -1377,27 +2907,26 @@ export default function MermaidVisualEditor() {
 
   const addTab = () => {
     const id = idRef.current++
-    setTabs((ts) => [
-      ...ts,
-      { id, name: `다이어그램 ${ts.length + 1}`, code: NEW_TAB_CODE },
+    setTabs((currentTabs) => [
+      ...currentTabs,
+      { id, name: `Diagram ${currentTabs.length + 1}`, code: NEW_TAB_CODE },
     ])
     setActiveId(id)
   }
 
   const closeTab = (id) => {
-    const tab = tabs.find((t) => t.id === id)
-    // 내용이 있는 탭은 닫기 전에 확인
+    const tab = tabs.find((currentTab) => currentTab.id === id)
     if (tab && tab.code.trim() && tab.code.trim() !== NEW_TAB_CODE.trim()) {
-      if (!window.confirm(`'${tab.name}' 탭을 닫을까요? 저장되지 않은 내용은 사라집니다.`)) {
+      if (!window.confirm(`Close '${tab.name}'? Unsaved content will be lost.`)) {
         return
       }
     }
-    setTabs((ts) => {
-      if (ts.length <= 1) return ts
-      const idx = ts.findIndex((t) => t.id === id)
-      const next = ts.filter((t) => t.id !== id)
+    setTabs((currentTabs) => {
+      if (currentTabs.length <= 1) return currentTabs
+      const index = currentTabs.findIndex((currentTab) => currentTab.id === id)
+      const next = currentTabs.filter((currentTab) => currentTab.id !== id)
       if (id === activeId) {
-        const fallback = next[Math.max(0, idx - 1)]
+        const fallback = next[Math.max(0, index - 1)]
         setActiveId(fallback.id)
       }
       return next
@@ -1420,35 +2949,35 @@ export default function MermaidVisualEditor() {
               type="button"
               className={tabActionBtn}
               onClick={() => mmdInputRef.current?.click()}
-              title=".mmd/.txt 파일을 새 탭으로 가져오기"
+              title="Import .mmd/.txt as a new tab"
             >
-              📥 가져오기
+              Import
             </button>
             <button
               type="button"
               className={tabActionBtn}
               onClick={backupWorkspace}
-              title="모든 탭 + 설정을 JSON으로 백업"
+              title="Back up all tabs and settings as JSON"
             >
-              ⬇ 백업
+              Backup
             </button>
             <button
               type="button"
               className={tabActionBtn}
               onClick={() => jsonInputRef.current?.click()}
-              title="백업 JSON에서 복원"
+              title="Restore from backup JSON"
             >
-              ⬆ 복원
+              Restore
             </button>
             <input
               ref={mmdInputRef}
               type="file"
               accept=".mmd,.md,.txt"
               className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) importMmd(f)
-                e.target.value = ''
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) importMmd(file)
+                event.target.value = ''
               }}
             />
             <input
@@ -1456,17 +2985,16 @@ export default function MermaidVisualEditor() {
               type="file"
               accept=".json"
               className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) restoreWorkspace(f)
-                e.target.value = ''
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) restoreWorkspace(file)
+                event.target.value = ''
               }}
             />
           </>
         }
       />
       <div className="min-h-0 flex-1">
-        {/* key=activeId: 탭 전환 시 해당 탭의 코드로 새로 마운트되어 캔버스 재구성 */}
         <ReactFlowProvider key={activeId}>
           <EditorInner
             key={activeId}

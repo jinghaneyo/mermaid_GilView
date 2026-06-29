@@ -36,8 +36,50 @@ describe('parseMermaid', () => {
     expect(error).toBeTruthy()
   })
 
+  it('parses sequence diagram participants and messages', async () => {
+    const { graph, error } = await parseMermaid(
+      [
+        'sequenceDiagram',
+        '  participant A as Alice',
+        '  participant B as Bob',
+        '  A->>B: Hello',
+        '  B-->>A: Hi',
+      ].join('\n'),
+    )
+
+    expect(error).toBeNull()
+    expect(graph).not.toBeNull()
+    expect(graph!.direction).toBe('LR')
+    expect(graph!.nodes).toEqual([
+      { id: 'A', label: 'Alice', shape: 'rect' },
+      { id: 'B', label: 'Bob', shape: 'rect' },
+    ])
+    expect(graph!.edges).toEqual([
+      { id: 'A-B-0', source: 'A', target: 'B', label: 'Hello' },
+      { id: 'B-A-1', source: 'B', target: 'A', label: 'Hi' },
+    ])
+  })
+
+  it('ignores sequence control records that are not actor-to-actor messages', async () => {
+    const { graph, error } = await parseMermaid(
+      [
+        'sequenceDiagram',
+        '  autonumber',
+        '  loop Every minute',
+        '    Alice->>Bob: Ping',
+        '  end',
+      ].join('\n'),
+    )
+
+    expect(error).toBeNull()
+    expect(graph!.nodes.map((node) => node.id)).toEqual(['Alice', 'Bob'])
+    expect(graph!.edges).toEqual([
+      { id: 'Alice-Bob-0', source: 'Alice', target: 'Bob', label: 'Ping' },
+    ])
+  })
+
   it('지원하지 않는 다이어그램 타입은 안내 에러를 반환한다', async () => {
-    const { graph, error } = await parseMermaid('sequenceDiagram\n  Alice->>Bob: Hi')
+    const { graph, error } = await parseMermaid('classDiagram\n  Animal <|-- Duck')
     expect(graph).toBeNull()
     expect(error).toContain('flowchart')
   })

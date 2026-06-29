@@ -10,6 +10,45 @@ describe('convertMermaid', () => {
     expect(Number.isFinite(res.nodes[0].position.x)).toBe(true)
   })
 
+  it('converts sequence diagrams to positioned participants and labeled messages', async () => {
+    const res = await convertMermaid(
+      [
+        'sequenceDiagram',
+        '  participant A as Alice',
+        '  participant B as Bob',
+        '  A->>B: Hello',
+      ].join('\n'),
+    )
+
+    expect(res.error).toBeNull()
+    expect(res.nodes.map((node) => [node.id, node.data.label])).toEqual([
+      ['A', 'Alice'],
+      ['B', 'Bob'],
+    ])
+    expect(res.edges).toEqual([
+      { id: 'A-B-0', source: 'A', target: 'B', label: 'Hello' },
+    ])
+    expect(Number.isFinite(res.nodes[0].position.x)).toBe(true)
+  })
+
+  it('converts sequence diagrams with autonumber and loop control records', async () => {
+    const res = await convertMermaid(
+      [
+        'sequenceDiagram',
+        '  autonumber',
+        '  loop Every minute',
+        '    Alice->>Bob: Ping',
+        '  end',
+      ].join('\n'),
+    )
+
+    expect(res.error).toBeNull()
+    expect(res.nodes.map((node) => node.id)).toEqual(['Alice', 'Bob'])
+    expect(res.edges).toEqual([
+      { id: 'Alice-Bob-0', source: 'Alice', target: 'Bob', label: 'Ping' },
+    ])
+  })
+
   it('빈 입력은 빈 결과, 에러 없음', async () => {
     const res = await convertMermaid('')
     expect(res).toEqual({ nodes: [], edges: [], error: null, groups: [] })
