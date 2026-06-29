@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -27,7 +28,6 @@ import { convertMermaid } from './lib/convertMermaid'
 import { scrollTopForLine } from './lib/codeEditorScroll'
 import { estimateLabelEditorRows } from './lib/labelEditorSizing'
 import {
-  centerViewportOnPoint,
   minimapViewportRect,
   viewportFromMinimapPoint,
 } from './lib/visualViewport'
@@ -449,6 +449,44 @@ function parseSvgDimension(value) {
   return match ? Number(match[1]) : null
 }
 
+function estimateVisualTextWidth(text) {
+  const value = String(text || '')
+  try {
+    const isJsdom =
+      typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent)
+    if (!isJsdom && typeof document !== 'undefined') {
+      estimateVisualTextWidth.canvas ??= document.createElement('canvas')
+      const context = estimateVisualTextWidth.canvas.getContext?.('2d')
+      if (context) {
+        context.font = '600 12px sans-serif'
+        return context.measureText(value).width
+      }
+    }
+  } catch {
+    // Fall back to deterministic character estimates in non-browser test environments.
+  }
+
+  return [...value].reduce((sum, ch) => {
+    const codePoint = ch.charCodeAt(0)
+    const isWide =
+      (codePoint >= 0x1100 && codePoint <= 0x11ff) ||
+      (codePoint >= 0x3130 && codePoint <= 0x318f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7af) ||
+      (codePoint >= 0x3040 && codePoint <= 0x30ff) ||
+      (codePoint >= 0x4e00 && codePoint <= 0x9fff)
+    return sum + (isWide ? 12 : 6.1)
+  }, 0)
+}
+
+const FIT_TEXT_HORIZONTAL_PADDING = 20
+
+function fitVisualWidth(baseWidth, label, maxWidth = 640) {
+  return Math.max(
+    baseWidth,
+    Math.min(maxWidth, estimateVisualTextWidth(label) + FIT_TEXT_HORIZONTAL_PADDING),
+  )
+}
+
 function getSvgSize(svg, fallbackWidth, fallbackHeight) {
   const svgTag = svg.match(/<svg\b[^>]*>/i)?.[0] ?? ''
   const width = parseSvgDimension(svgTag.match(/\bwidth="([^"]+)"/i)?.[1])
@@ -572,11 +610,14 @@ function SequenceCallBlock({
   y,
   colors,
   isDark,
+  fitNodeWidthToText,
   isFlashing,
   onSelect,
   onEdit,
 }) {
-  const callBlockWidth = 210
+  const callBlockWidth = fitNodeWidthToText
+    ? fitVisualWidth(210, message.label)
+    : 210
   const callBlockHeight = 40
 
   return (
@@ -668,6 +709,7 @@ function SequenceCanvas({
   selectedElement,
   focusRequestKey,
   zoom,
+  fitNodeWidthToText = false,
   onSelectElement,
   onRenameParticipant,
   onUpdateMessage,
@@ -697,9 +739,23 @@ function SequenceCanvas({
   const markerIdRef = useRef(`sequence-arrow-${Math.random().toString(36).slice(2)}`)
   const selectedKey = sequenceElementKey(selectedElement)
 
-  const participantWidth = 128
+  const baseParticipantWidth = 128
+  const participantWidth = fitNodeWidthToText
+    ? Math.max(
+        baseParticipantWidth,
+        Math.min(
+          640,
+          Math.max(
+            0,
+            ...model.participants.map((participant) =>
+              fitVisualWidth(baseParticipantWidth, participant.label),
+            ),
+          ),
+        ),
+      )
+    : baseParticipantWidth
   const participantHeight = 32
-  const gap = 172
+  const gap = Math.max(172, participantWidth + 44)
   const marginX = 72
   const topY = 28
   const lifelineTop = topY + participantHeight
@@ -775,13 +831,21 @@ function SequenceCanvas({
     padding: minimapPadding,
   })
 
-  const updateScrollViewport = (element) => {
-    setScrollViewport({
-      left: element.scrollLeft,
-      top: element.scrollTop,
-      width: element.clientWidth || scrollViewport.width,
-      height: element.clientHeight || scrollViewport.height,
-    })
+  const updateViewportSize = (element) => {
+    setScrollViewport((current) => ({
+      ...current,
+      width: element.clientWidth || current.width,
+      height: element.clientHeight || current.height,
+    }))
+  }
+
+  const setViewportPosition = (element, nextPosition) => {
+    setScrollViewport((current) => ({
+      left: nextPosition.left,
+      top: nextPosition.top,
+      width: element.clientWidth || current.width,
+      height: element.clientHeight || current.height,
+    }))
   }
 
   const focusPointForElement = (element) => {
@@ -819,20 +883,9 @@ function SequenceCanvas({
 
     const clientWidth = element.clientWidth || scrollViewport.width
     const clientHeight = element.clientHeight || scrollViewport.height
-    const nextScroll = centerViewportOnPoint({
-      point: focusPoint,
-      zoom,
-      contentWidth,
-      contentHeight,
-      clientWidth,
-      clientHeight,
-    })
-
-    element.scrollLeft = nextScroll.left
-    element.scrollTop = nextScroll.top
     setScrollViewport({
-      left: nextScroll.left,
-      top: nextScroll.top,
+      left: focusPoint.x * zoom - clientWidth / 2,
+      top: focusPoint.y * zoom - clientHeight / 2,
       width: clientWidth,
       height: clientHeight,
     })
@@ -862,12 +915,11 @@ function SequenceCanvas({
   const beginCanvasPan = (event) => {
     if (event.button !== 0 || shouldSkipCanvasPan(event.target)) return
 
-    const element = event.currentTarget
     canvasPanRef.current = {
       startX: event.clientX,
       startY: event.clientY,
-      scrollLeft: element.scrollLeft,
-      scrollTop: element.scrollTop,
+      left: scrollViewport.left,
+      top: scrollViewport.top,
     }
     setIsCanvasPanning(true)
   }
@@ -878,9 +930,10 @@ function SequenceCanvas({
     if (!drag || !element) return
 
     event.preventDefault()
-    element.scrollLeft = drag.scrollLeft - (event.clientX - drag.startX)
-    element.scrollTop = drag.scrollTop - (event.clientY - drag.startY)
-    updateScrollViewport(element)
+    setViewportPosition(element, {
+      left: drag.left - (event.clientX - drag.startX),
+      top: drag.top - (event.clientY - drag.startY),
+    })
   }
 
   const endCanvasPan = () => {
@@ -935,9 +988,7 @@ function SequenceCanvas({
       padding: minimapPadding,
     })
 
-    element.scrollLeft = nextScroll.left
-    element.scrollTop = nextScroll.top
-    updateScrollViewport(element)
+    setViewportPosition(element, nextScroll)
   }
 
   const handleMinimapWheel = (event) => {
@@ -961,17 +1012,20 @@ function SequenceCanvas({
     if (nextZoom === zoom) return
 
     const rect = element.getBoundingClientRect()
+    const styles = window.getComputedStyle(element)
+    const paddingLeft = Number.parseFloat(styles.paddingLeft) || 0
+    const paddingTop = Number.parseFloat(styles.paddingTop) || 0
     const offsetX = event.clientX - rect.left
     const offsetY = event.clientY - rect.top
-    const diagramX = (element.scrollLeft + offsetX) / zoom
-    const diagramY = (element.scrollTop + offsetY) / zoom
+    const diagramX = (scrollViewport.left + offsetX - paddingLeft) / zoom
+    const diagramY = (scrollViewport.top + offsetY - paddingTop) / zoom
 
-    onZoomChange(nextZoom)
-
-    window.requestAnimationFrame?.(() => {
-      element.scrollLeft = diagramX * nextZoom - offsetX
-      element.scrollTop = diagramY * nextZoom - offsetY
-      updateScrollViewport(element)
+    flushSync(() => {
+      onZoomChange(nextZoom)
+    })
+    setViewportPosition(element, {
+      left: diagramX * nextZoom + paddingLeft - offsetX,
+      top: diagramY * nextZoom + paddingTop - offsetY,
     })
   }
 
@@ -1014,10 +1068,12 @@ function SequenceCanvas({
     <div
       ref={scrollContainerRef}
       data-testid="sequence-editor-canvas"
-      className={`relative h-full w-full overflow-auto p-6 ${
+      data-pan-left={scrollViewport.left}
+      data-pan-top={scrollViewport.top}
+      className={`relative h-full w-full overflow-hidden p-6 ${
         isCanvasPanning ? 'cursor-grabbing' : 'cursor-grab'
       } ${isDark ? 'bg-slate-900' : 'bg-white'}`}
-      onScroll={(event) => updateScrollViewport(event.currentTarget)}
+      onScroll={(event) => updateViewportSize(event.currentTarget)}
       onMouseDown={beginCanvasPan}
       onMouseMove={moveCanvasPan}
       onMouseUp={(event) => {
@@ -1029,10 +1085,12 @@ function SequenceCanvas({
     >
       <div
         className="relative"
+        data-testid="sequence-pan-layer"
         style={{
           width: renderWidth * zoom,
           height: renderHeight * zoom,
           color: colors.text,
+          transform: `translate(${-scrollViewport.left}px, ${-scrollViewport.top}px)`,
         }}
       >
         <div
@@ -1123,6 +1181,7 @@ function SequenceCanvas({
                     y={y}
                     colors={colors}
                     isDark={isDark}
+                    fitNodeWidthToText={fitNodeWidthToText}
                     isFlashing={flashingKey === messageKey}
                     onSelect={() =>
                       onSelectElement({
@@ -1261,7 +1320,19 @@ function SequenceCanvas({
             })
             const selected = key === selectedKey
             const isEditing = editingMessageLine === message.lineIndex
-            const editorLeft = Math.max(12, labelX - 100)
+            const isSelfMessage = message.from === message.to
+            const overlayWidth =
+              isSelfMessage && fitNodeWidthToText
+                ? fitVisualWidth(220, message.label)
+                : 220
+            const editorWidth =
+              isSelfMessage && fitNodeWidthToText
+                ? fitVisualWidth(210, message.label) + 2
+                : 200
+            const editorLeft = isSelfMessage
+              ? fromX - editorWidth / 2
+              : Math.max(12, labelX - editorWidth / 2)
+            const editorTop = isSelfMessage ? y - 14 : y - 36
 
             return isEditing ? (
               <input
@@ -1279,8 +1350,8 @@ function SequenceCanvas({
                     setEditingMessageLine(null)
                   }
                 }}
-                className="absolute z-20 h-7 w-[200px] rounded border border-blue-500 bg-white px-2 text-center text-xs text-slate-900 outline-none ring-2 ring-blue-500"
-                style={{ left: editorLeft, top: y - 36 }}
+                className="absolute z-20 h-7 rounded border border-blue-500 bg-white px-2 text-center text-xs text-slate-900 outline-none ring-2 ring-blue-500"
+                style={{ left: editorLeft, top: editorTop, width: editorWidth }}
               />
             ) : (
               <button
@@ -1307,6 +1378,7 @@ function SequenceCanvas({
                 style={{
                   left: labelX,
                   top: y - 34,
+                  width: overlayWidth,
                 }}
               />
             )
@@ -2600,6 +2672,7 @@ function EditorInner({
               selectedElement={selectedSequenceElement}
               focusRequestKey={sequenceFocusRequestKey}
               zoom={sequenceZoom}
+              fitNodeWidthToText={fitNodeWidthToText}
               onSelectElement={selectSequenceElement}
               onRenameParticipant={(participantId, label) => {
                 applyCodeAndParse(renameSequenceParticipant(code, participantId, label))

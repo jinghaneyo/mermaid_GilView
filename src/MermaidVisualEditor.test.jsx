@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect } from 'vitest'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import MermaidVisualEditor from './MermaidVisualEditor'
 import { convertCanvasToMermaid } from './MermaidVisualEditor'
@@ -304,6 +304,95 @@ describe('MermaidVisualEditor: node label editing', () => {
     })
   })
 
+  it('fits sequence participant width to long labels when fit width is enabled', async () => {
+    const code = [
+      'sequenceDiagram',
+      '  participant ExternalSensor as External TCP/WebSocket Sensor Gateway',
+      '  participant B as Bob',
+      '  ExternalSensor->>B: Hello',
+    ].join('\n')
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    const participant = await screen.findByRole('button', {
+      name: 'External TCP/WebSocket Sensor Gateway',
+    })
+    expect(participant.style.width).toBe('128px')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fit width OFF' }))
+
+    await waitFor(() => {
+      expect(Number.parseFloat(participant.style.width)).toBeGreaterThan(240)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fit width ON' }))
+
+    await waitFor(() => {
+      expect(participant.style.width).toBe('128px')
+    })
+  })
+
+  it('fits sequence call block width to long labels when fit width is enabled', async () => {
+    const code = [
+      'sequenceDiagram',
+      '  participant Tracker as Tracker',
+      '  Tracker->>Tracker: processBatch() -> processBatchPredictJPDAO()',
+    ].join('\n')
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    const block = await screen.findByTestId('sequence-call-block')
+    const rect = block.querySelector('rect')
+    expect(Number(rect.getAttribute('width'))).toBe(210)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fit width OFF' }))
+
+    await waitFor(() => {
+      expect(Number(rect.getAttribute('width'))).toBeGreaterThan(260)
+      expect(Number(rect.getAttribute('width'))).toBeLessThan(310)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fit width ON' }))
+
+    await waitFor(() => {
+      expect(Number(rect.getAttribute('width'))).toBe(210)
+    })
+  })
+
+  it('fits the sequence message editor width to the selected call block', async () => {
+    const label = 'handleMessage() / *FromJSON (검증-변환)'
+    const code = [
+      'sequenceDiagram',
+      '  participant SensorClient as SensorClient',
+      `  SensorClient->>SensorClient: ${label}`,
+    ].join('\n')
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    const block = await screen.findByTestId('sequence-call-block')
+    fireEvent.click(screen.getByRole('button', { name: 'Fit width OFF' }))
+
+    await waitFor(() => {
+      expect(Number(block.querySelector('rect').getAttribute('width'))).toBeGreaterThan(
+        240,
+      )
+    })
+
+    fireEvent.doubleClick(block)
+
+    const editor = await screen.findByLabelText('Edit message label')
+    const rect = block.querySelector('rect')
+    expect(Number.parseFloat(editor.style.width)).toBeCloseTo(
+      Number(rect.getAttribute('width')) + 2,
+    )
+    expect(Number.parseFloat(editor.style.left)).toBeCloseTo(
+      Number(rect.getAttribute('x')) - 1,
+    )
+    expect(Number.parseFloat(editor.style.top)).toBeCloseTo(
+      Number(rect.getAttribute('y')) + 6,
+    )
+  })
+
   it('renders sequence-only visual editor elements instead of relying on the official SVG view', async () => {
     const code = [
       'sequenceDiagram',
@@ -573,8 +662,9 @@ describe('MermaidVisualEditor: node label editing', () => {
     const canvas = await screen.findByTestId('sequence-editor-canvas')
     Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 320 })
     Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 220 })
-    canvas.scrollLeft = 40
-    canvas.scrollTop = 30
+    fireEvent.mouseDown(canvas, { button: 0, clientX: 200, clientY: 120 })
+    fireEvent.mouseMove(canvas, { buttons: 1, clientX: 160, clientY: 90 })
+    fireEvent.mouseUp(canvas)
 
     fireEvent.click(screen.getByTestId('sequence-call-block').querySelector('rect'))
 
@@ -585,8 +675,8 @@ describe('MermaidVisualEditor: node label editing', () => {
       expect(editor.selectionStart).toBe(code.indexOf('  A->>A: Self call'))
     })
 
-    expect(canvas.scrollLeft).toBe(40)
-    expect(canvas.scrollTop).toBe(30)
+    expect(Number.parseFloat(canvas.dataset.panLeft)).toBe(40)
+    expect(Number.parseFloat(canvas.dataset.panTop)).toBe(30)
   })
 
   it('syncs Mermaid code clicks to the sequence canvas selection', async () => {
@@ -644,7 +734,7 @@ describe('MermaidVisualEditor: node label editing', () => {
       expect(screen.getByRole('button', { name: 'Wide message' }).dataset.selected).toBe(
         'true',
       )
-      expect(canvas.scrollLeft).toBeGreaterThan(300)
+      expect(Number.parseFloat(canvas.dataset.panLeft)).toBeGreaterThan(300)
     })
   })
 
@@ -710,7 +800,7 @@ describe('MermaidVisualEditor: node label editing', () => {
     })
   })
 
-  it('keeps wide sequence diagram scrolling inside the right pane', async () => {
+  it('keeps wide sequence diagram controls scrollbar-free inside the right pane', async () => {
     const code = [
       'sequenceDiagram',
       '  participant A as Alice',
@@ -732,7 +822,7 @@ describe('MermaidVisualEditor: node label editing', () => {
       'overflow-hidden',
     )
     expect(screen.getByTestId('sequence-editor-canvas').className).toContain(
-      'overflow-auto',
+      'overflow-hidden',
     )
   })
 
@@ -772,7 +862,7 @@ describe('MermaidVisualEditor: node label editing', () => {
     fireEvent.mouseUp(minimap)
 
     await waitFor(() => {
-      expect(canvas.scrollLeft).toBeGreaterThan(0)
+      expect(Number.parseFloat(canvas.dataset.panLeft)).toBeGreaterThan(0)
     })
 
     fireEvent.wheel(minimap, { deltaY: -100 })
@@ -801,15 +891,35 @@ describe('MermaidVisualEditor: node label editing', () => {
     const canvas = await screen.findByTestId('sequence-editor-canvas')
     Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 320 })
     Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 220 })
-    canvas.scrollLeft = 40
-    canvas.scrollTop = 30
 
     fireEvent.mouseDown(canvas, { button: 0, clientX: 200, clientY: 120 })
     fireEvent.mouseMove(canvas, { buttons: 1, clientX: 120, clientY: 80 })
     fireEvent.mouseUp(canvas)
 
-    expect(canvas.scrollLeft).toBe(120)
-    expect(canvas.scrollTop).toBe(70)
+    expect(Number.parseFloat(canvas.dataset.panLeft)).toBe(80)
+    expect(Number.parseFloat(canvas.dataset.panTop)).toBe(40)
+  })
+
+  it('allows the sequence diagram to pan past the top-left boundary', async () => {
+    const code = [
+      'sequenceDiagram',
+      '  participant A as Alice',
+      '  participant B as Bob',
+      '  A->>B: Hello',
+    ].join('\n')
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    const canvas = await screen.findByTestId('sequence-editor-canvas')
+    Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 320 })
+    Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 220 })
+
+    fireEvent.mouseDown(canvas, { button: 0, clientX: 120, clientY: 120 })
+    fireEvent.mouseMove(canvas, { buttons: 1, clientX: 220, clientY: 190 })
+    fireEvent.mouseUp(canvas)
+
+    expect(Number.parseFloat(canvas.dataset.panLeft)).toBe(-100)
+    expect(Number.parseFloat(canvas.dataset.panTop)).toBe(-70)
   })
 
   it('zooms the sequence diagram with the mouse wheel on the canvas', async () => {
@@ -834,6 +944,84 @@ describe('MermaidVisualEditor: node label editing', () => {
       )
       expect(screen.getByTestId('sequence-minimap').textContent).toContain('110%')
     })
+  })
+
+  it('keeps the sequence diagram anchored immediately when wheel zooming', async () => {
+    const code = [
+      'sequenceDiagram',
+      '  participant A as Alice',
+      '  participant B as Bob',
+      '  A->>B: Hello',
+    ].join('\n')
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    const originalRequestAnimationFrame = window.requestAnimationFrame
+    window.requestAnimationFrame = vi.fn()
+
+    try {
+      const canvas = await screen.findByTestId('sequence-editor-canvas')
+      Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 320 })
+      Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 220 })
+      fireEvent.mouseDown(canvas, { button: 0, clientX: 200, clientY: 120 })
+      fireEvent.mouseMove(canvas, { buttons: 1, clientX: 160, clientY: 90 })
+      fireEvent.mouseUp(canvas)
+
+      fireEvent.wheel(canvas, { deltaY: -100, clientX: 160, clientY: 110 })
+
+      expect(Number.parseFloat(canvas.dataset.panLeft)).toBeCloseTo(60)
+      expect(Number.parseFloat(canvas.dataset.panTop)).toBeCloseTo(44)
+      expect(window.requestAnimationFrame).not.toHaveBeenCalled()
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame
+    }
+  })
+
+  it('applies the sequence zoom before compensating scroll on wheel zoom', async () => {
+    const code = [
+      'sequenceDiagram',
+      '  participant A as Alice',
+      '  participant B as Bob',
+      '  A->>B: Hello',
+    ].join('\n')
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    const canvas = await screen.findByTestId('sequence-editor-canvas')
+    const surface = screen.getByTestId('sequence-diagram-surface')
+    Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 320 })
+    Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 220 })
+
+    fireEvent.wheel(canvas, { deltaY: -100, clientX: 160, clientY: 110 })
+
+    expect(surface.style.transform).toBe('scale(1.1)')
+    expect(Number.parseFloat(canvas.dataset.panLeft)).toBeCloseTo(16)
+    expect(Number.parseFloat(canvas.dataset.panTop)).toBeCloseTo(11)
+  })
+
+  it('uses the mouse position inside the sequence diagram as the wheel zoom anchor', async () => {
+    const code = [
+      'sequenceDiagram',
+      '  participant A as Alice',
+      '  participant B as Bob',
+      '  A->>B: Hello',
+    ].join('\n')
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    const canvas = await screen.findByTestId('sequence-editor-canvas')
+    Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 320 })
+    Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 220 })
+    canvas.style.paddingLeft = '24px'
+    canvas.style.paddingTop = '24px'
+    fireEvent.mouseDown(canvas, { button: 0, clientX: 200, clientY: 120 })
+    fireEvent.mouseMove(canvas, { buttons: 1, clientX: 160, clientY: 90 })
+    fireEvent.mouseUp(canvas)
+
+    fireEvent.wheel(canvas, { deltaY: -100, clientX: 160, clientY: 110 })
+
+    expect(Number.parseFloat(canvas.dataset.panLeft)).toBeCloseTo(57.6)
+    expect(Number.parseFloat(canvas.dataset.panTop)).toBeCloseTo(41.6)
   })
 
   it('reorders a sequence participant when it is dragged and released on the canvas', async () => {
