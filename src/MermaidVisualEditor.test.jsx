@@ -5,6 +5,7 @@ import { convertCanvasToMermaid } from './MermaidVisualEditor'
 
 beforeEach(() => {
   localStorage.clear()
+  window.history.replaceState(null, '', '/')
   global.ResizeObserver = class {
     observe() {}
     unobserve() {}
@@ -102,6 +103,28 @@ describe('MermaidVisualEditor: node label editing', () => {
       }),
     )
   }
+
+  it('loads Mermaid code from embed hash instead of the saved workspace', async () => {
+    loadTestDiagram('graph TD\n  Old[Saved] --> Code[Ignored]')
+    const code = [
+      'sequenceDiagram',
+      '  사용자->>서버: 요청 전송',
+      '  서버-->>사용자: 응답 반환',
+    ].join('\n')
+    const bytes = new TextEncoder().encode(code)
+    let binary = ''
+    for (const byte of bytes) binary += String.fromCharCode(byte)
+    const encoded = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    window.history.replaceState(null, '', `/#embed=1&theme=dark&code=${encoded}`)
+
+    render(<MermaidVisualEditor />)
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('textbox').map((textbox) => textbox.value)).toContain(code)
+    })
+    expect(await screen.findByTestId('mermaid-sequence-preview')).toBeTruthy()
+    expect(await screen.findByTestId('sequence-diagram-surface')).toBeTruthy()
+  })
 
   it('commits edited labels on blur without treating the blur event as a label', async () => {
     loadTestDiagram()
@@ -218,7 +241,9 @@ describe('MermaidVisualEditor: node label editing', () => {
     loadTestDiagram('graph TD\n  A[Start]')
     render(<MermaidVisualEditor />)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Diamond node' }))
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Node shape' }), {
+      target: { value: 'diamond' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Add node' }))
 
     await waitFor(() => {
@@ -351,13 +376,17 @@ describe('MermaidVisualEditor: node label editing', () => {
     })
     expect(participant.style.width).toBe('128px')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Fit width OFF' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'View options' }), {
+      target: { value: 'fit' },
+    })
 
     await waitFor(() => {
       expect(Number.parseFloat(participant.style.width)).toBeGreaterThan(240)
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Fit width ON' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'View options' }), {
+      target: { value: 'fit' },
+    })
 
     await waitFor(() => {
       expect(participant.style.width).toBe('128px')
@@ -377,14 +406,18 @@ describe('MermaidVisualEditor: node label editing', () => {
     const rect = block.querySelector('rect')
     expect(Number(rect.getAttribute('width'))).toBe(210)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Fit width OFF' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'View options' }), {
+      target: { value: 'fit' },
+    })
 
     await waitFor(() => {
       expect(Number(rect.getAttribute('width'))).toBeGreaterThan(260)
       expect(Number(rect.getAttribute('width'))).toBeLessThan(310)
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Fit width ON' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'View options' }), {
+      target: { value: 'fit' },
+    })
 
     await waitFor(() => {
       expect(Number(rect.getAttribute('width'))).toBe(210)
@@ -402,7 +435,9 @@ describe('MermaidVisualEditor: node label editing', () => {
     render(<MermaidVisualEditor />)
 
     const block = await screen.findByTestId('sequence-call-block')
-    fireEvent.click(screen.getByRole('button', { name: 'Fit width OFF' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'View options' }), {
+      target: { value: 'fit' },
+    })
 
     await waitFor(() => {
       expect(Number(block.querySelector('rect').getAttribute('width'))).toBeGreaterThan(
@@ -452,6 +487,26 @@ describe('MermaidVisualEditor: node label editing', () => {
       expect(screen.getByTestId('sequence-fragment').textContent).toContain('loop')
       expect(screen.getByTestId('sequence-note').textContent).toContain('shared state')
       expect(screen.getByTestId('sequence-activation')).toBeTruthy()
+    })
+  })
+
+  it('fits sequence note boxes around long labels', async () => {
+    const noteText = 'batchLoop() 주기 실행 (goroutine 추정)'
+    const code = [
+      'sequenceDiagram',
+      '  participant A as Tracker',
+      '  Note right of A: ' + noteText,
+    ].join('\n')
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    await screen.findByTestId('sequence-editor-canvas')
+
+    await waitFor(() => {
+      const note = screen.getByTestId('sequence-note')
+      const rect = note.querySelector('rect')
+      expect(note.textContent).toContain(noteText)
+      expect(Number(rect.getAttribute('width'))).toBeGreaterThan(240)
     })
   })
 
@@ -521,6 +576,34 @@ describe('MermaidVisualEditor: node label editing', () => {
     )
   })
 
+  it('marks sequence message from and to participants with endpoint circles', async () => {
+    const code = [
+      'sequenceDiagram',
+      '  participant Ext as External',
+      '  participant Cli as Client',
+      '  Ext-->>Cli: Measurement stream',
+    ].join('\n')
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    await screen.findByTestId('sequence-editor-canvas')
+
+    await waitFor(() => {
+      const endpoints = screen.getAllByTestId('sequence-message-endpoint')
+      expect(endpoints).toHaveLength(2)
+      expect(endpoints[0].getAttribute('data-endpoint')).toBe('from')
+      expect(endpoints[0].getAttribute('data-participant')).toBe('Ext')
+      expect(Number(endpoints[0].getAttribute('cx'))).toBe(136)
+      expect(Number(endpoints[0].getAttribute('r'))).toBe(5)
+      expect(endpoints[0].getAttribute('fill')).toBe('#ffffff')
+      expect(endpoints[1].getAttribute('data-endpoint')).toBe('to')
+      expect(endpoints[1].getAttribute('data-participant')).toBe('Cli')
+      expect(Number(endpoints[1].getAttribute('cx'))).toBe(308)
+      expect(Number(endpoints[1].getAttribute('r'))).toBe(8)
+      expect(endpoints[1].getAttribute('stroke')).toBe('#ffffff')
+    })
+  })
+
   it('keeps sequence visual editor controls and adds viewer controls', async () => {
     const code = [
       'sequenceDiagram',
@@ -534,13 +617,40 @@ describe('MermaidVisualEditor: node label editing', () => {
     await screen.findByTestId('sequence-editor-canvas')
 
     expect(screen.getByRole('searchbox', { name: 'Search sequence' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Zoom in sequence' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Zoom out sequence' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Reset sequence zoom' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Zoom sequence' })).toBeTruthy()
     expect(screen.getByTestId('sequence-minimap')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Add participant' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Add message' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Move participant left' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Add sequence item' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Move participant' })).toBeTruthy()
+  })
+
+  it('toggles the sequence diagram grid from the view options menu', async () => {
+    const code = [
+      'sequenceDiagram',
+      '  participant A as Alice',
+      '  participant B as Bob',
+      '  A->>B: Hello',
+    ].join('\n')
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    await screen.findByTestId('sequence-editor-canvas')
+    expect(screen.getByTestId('sequence-grid-background')).toBeTruthy()
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'View options' }), {
+      target: { value: 'grid' },
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('sequence-grid-background')).toBeNull()
+    })
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'View options' }), {
+      target: { value: 'grid' },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId('sequence-grid-background')).toBeTruthy()
+    })
   })
 
   it('edits sequence participants and messages from the canvas', async () => {
@@ -576,6 +686,23 @@ describe('MermaidVisualEditor: node label editing', () => {
     })
   })
 
+  it('fits the sequence message editor to long participant-to-participant labels', async () => {
+    const longLabel = 'onTrackUpdate -> enqueuePublish (queue, async dispatch)'
+    const code = [
+      'sequenceDiagram',
+      '  participant A as SensorClient',
+      '  participant B as fusion.Coordinator',
+      `  A-->>B: ${longLabel}`,
+    ].join('\n')
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    fireEvent.doubleClick(await screen.findByRole('button', { name: longLabel }))
+
+    const messageEditor = await screen.findByLabelText('Edit message label')
+    expect(Number.parseFloat(messageEditor.style.width)).toBeGreaterThan(300)
+  })
+
   it('adds and moves sequence participants from the toolbar', async () => {
     const code = [
       'sequenceDiagram',
@@ -587,8 +714,12 @@ describe('MermaidVisualEditor: node label editing', () => {
     render(<MermaidVisualEditor />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Bob' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Move participant left' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Add participant' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Move participant' }), {
+      target: { value: 'left' },
+    })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Add sequence item' }), {
+      target: { value: 'participant' },
+    })
 
     await waitFor(() => {
       expect(
@@ -811,7 +942,9 @@ describe('MermaidVisualEditor: node label editing', () => {
     render(<MermaidVisualEditor />)
 
     await screen.findByTestId('sequence-diagram-surface')
-    fireEvent.click(screen.getByRole('button', { name: 'Zoom in sequence' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Zoom sequence' }), {
+      target: { value: 'in' },
+    })
 
     await waitFor(() => {
       expect(screen.getByTestId('sequence-diagram-surface').style.transform).toBe(
@@ -830,7 +963,9 @@ describe('MermaidVisualEditor: node label editing', () => {
       expect(screen.getAllByTestId('sequence-minimap-message')).toHaveLength(1)
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reset sequence zoom' }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Zoom sequence' }), {
+      target: { value: 'reset' },
+    })
 
     await waitFor(() => {
       expect(screen.getByTestId('sequence-diagram-surface').style.transform).toBe(
@@ -863,6 +998,33 @@ describe('MermaidVisualEditor: node label editing', () => {
     expect(screen.getByTestId('sequence-editor-canvas').className).toContain(
       'overflow-hidden',
     )
+  })
+
+  it('keeps flowchart and sequence toolbar controls on one compact row', async () => {
+    loadTestDiagram('graph TD\n  A[Start] --> B[End]')
+    render(<MermaidVisualEditor />)
+
+    await screen.findByText('Start')
+
+    expect(screen.getByTestId('diagram-toolbar').className).toContain('flex-nowrap')
+    expect(screen.getByRole('combobox', { name: 'Node shape' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Export diagram' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'View options' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Rect node' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'PNG' })).toBeNull()
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Insert example template' }), {
+      target: { value: 'sequence' },
+    })
+
+    await screen.findByTestId('sequence-diagram-surface')
+    expect(screen.getByTestId('diagram-toolbar').className).toContain('flex-nowrap')
+    expect(screen.queryByRole('combobox', { name: 'Node shape' })).toBeNull()
+    expect(screen.getByRole('combobox', { name: 'Add sequence item' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Move participant' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Zoom sequence' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Export diagram' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'View options' })).toBeTruthy()
   })
 
   it('pans and zooms the sequence diagram from the minimap', async () => {

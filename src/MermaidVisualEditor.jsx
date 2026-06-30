@@ -573,7 +573,11 @@ function SequenceNoteBlock({ note, layout, colors, isDark }) {
   const xs = note.participants.map((participant) => layout.xForParticipant(participant))
   const minX = Math.min(...xs)
   const maxX = Math.max(...xs)
-  const width = note.placement === 'over' ? Math.max(170, maxX - minX + 120) : 170
+  const textWidth = fitVisualWidth(170, note.text, 640)
+  const width =
+    note.placement === 'over'
+      ? Math.max(textWidth, maxX - minX + 120)
+      : textWidth
   const left =
     note.placement === 'left'
       ? minX - width - 24
@@ -669,6 +673,8 @@ function SequenceMessageArrow({
 }) {
   const isReturn = message.arrow.includes('--')
   const direction = toX >= fromX ? 1 : -1
+  const fromEndpointRadius = 5
+  const toEndpointRadius = 8
 
   return (
     <g
@@ -690,6 +696,28 @@ function SequenceMessageArrow({
         strokeDasharray={isReturn ? '5 4' : undefined}
         markerEnd={`url(#${markerId})`}
       />
+      <circle
+        data-testid="sequence-message-endpoint"
+        data-endpoint="from"
+        data-participant={message.from}
+        cx={fromX}
+        cy={y}
+        r={fromEndpointRadius}
+        fill={colors.messageFill}
+        stroke={colors.line}
+        strokeWidth="2"
+      />
+      <circle
+        data-testid="sequence-message-endpoint"
+        data-endpoint="to"
+        data-participant={message.to}
+        cx={toX}
+        cy={y}
+        r={toEndpointRadius}
+        fill={colors.line}
+        stroke={colors.messageFill}
+        strokeWidth="2"
+      />
       <text
         x={Math.min(fromX, toX) + Math.abs(toX - fromX) / 2}
         y={y - 10}
@@ -707,6 +735,7 @@ function SequenceCanvas({
   code,
   sequenceSvg,
   theme,
+  showGrid,
   selectedElement,
   focusRequestKey,
   zoom,
@@ -1084,6 +1113,19 @@ function SequenceCanvas({
       onMouseLeave={endCanvasPan}
       onWheel={handleCanvasWheel}
     >
+      {showGrid && (
+        <div
+          data-testid="sequence-grid-background"
+          className="pointer-events-none absolute inset-0"
+          style={{
+            backgroundImage:
+              theme === 'dark'
+                ? 'linear-gradient(#334155 1px, transparent 1px), linear-gradient(90deg, #334155 1px, transparent 1px)'
+                : 'linear-gradient(#e2e8f0 1px, transparent 1px), linear-gradient(90deg, #e2e8f0 1px, transparent 1px)',
+            backgroundSize: '40px 40px',
+          }}
+        />
+      )}
       <div
         className="relative"
         data-testid="sequence-pan-layer"
@@ -1327,9 +1369,11 @@ function SequenceCanvas({
                 ? fitVisualWidth(220, message.label)
                 : 220
             const editorWidth =
-              isSelfMessage && fitNodeWidthToText
-                ? fitVisualWidth(210, message.label) + 2
-                : 200
+              isSelfMessage
+                ? fitNodeWidthToText
+                  ? fitVisualWidth(210, messageDraft || message.label) + 2
+                  : 200
+                : fitVisualWidth(200, messageDraft || message.label) + 2
             const editorLeft = isSelfMessage
               ? fromX - editorWidth / 2
               : Math.max(12, labelX - editorWidth / 2)
@@ -1556,6 +1600,8 @@ function EditorInner({
   setFitNodeWidthToText,
   leftWidth,
   setLeftWidth,
+  initialCodePanelHidden = false,
+  hideCodePanelToggle = false,
 }) {
   const [code, setCode] = useState(initialCode ?? INITIAL_CODE)
   const [error, setError] = useState(null)
@@ -1571,7 +1617,7 @@ function EditorInner({
   const [selectedSequenceElement, setSelectedSequenceElement] = useState(null)
   const [sequenceFocusRequestKey, setSequenceFocusRequestKey] = useState(0)
   const [sequenceZoom, setSequenceZoom] = useState(1)
-  const [isCodePanelHidden, setIsCodePanelHidden] = useState(false)
+  const [isCodePanelHidden, setIsCodePanelHidden] = useState(initialCodePanelHidden)
   const [codeLineMetrics, setCodeLineMetrics] = useState({
     lineHeight: 22,
     paddingTop: 16,
@@ -2315,11 +2361,13 @@ function EditorInner({
   }
 
   const btnClass =
-    'rounded-md border border-slate-300 bg-white/90 px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm hover:bg-white'
-  const shapeBtnClass = (shape) =>
-    shape === addNodeShape
-      ? 'flex h-8 w-8 items-center justify-center rounded-md border border-blue-500 bg-blue-50 text-sm font-semibold text-blue-700 shadow-sm ring-2 ring-blue-500'
-      : 'flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 bg-white/90 text-sm font-semibold text-slate-700 shadow-sm hover:bg-white'
+    'inline-flex h-8 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 bg-white/90 px-2.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-white'
+  const compactBtnClass =
+    'inline-flex h-8 items-center justify-center whitespace-nowrap rounded-md border border-slate-300 px-1.5 text-xs font-medium text-slate-700 disabled:opacity-40'
+  const selectClass =
+    'h-8 w-20 rounded-md border border-slate-300 bg-white/90 px-2 text-xs font-medium text-slate-700 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500'
+  const narrowSelectClass =
+    'h-8 w-16 rounded-md border border-slate-300 bg-white/90 px-1.5 text-xs font-medium text-slate-700 shadow-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500'
   const sequenceModel =
     diagramMode === 'sequence'
       ? parseSequenceEditorModel(code)
@@ -2338,10 +2386,47 @@ function EditorInner({
       selectedSequenceElement?.type === 'participant' &&
       participant.id === selectedSequenceElement.id,
   )
+  const handleExportSelect = (event) => {
+    const format = event.target.value
+    event.target.value = ''
+    if (format === 'png' || format === 'svg') exportImage(format)
+    else if (format === 'mmd') exportMmd()
+    else if (format === 'copy') copyCode()
+  }
+  const handleSequenceAddSelect = (event) => {
+    const action = event.target.value
+    event.target.value = ''
+    if (action === 'participant') handleAddSequenceParticipant()
+    else if (action === 'message') handleAddSequenceMessage()
+  }
+  const handleSequenceMoveSelect = (event) => {
+    const action = event.target.value
+    event.target.value = ''
+    if (action === 'left') moveSelectedSequenceParticipant(-1)
+    else if (action === 'right') moveSelectedSequenceParticipant(1)
+  }
+  const handleSequenceZoomSelect = (event) => {
+    const action = event.target.value
+    event.target.value = ''
+    if (action === 'out') {
+      setSequenceZoom((zoom) => Math.max(0.5, +(zoom - 0.1).toFixed(2)))
+    } else if (action === 'reset') setSequenceZoom(1)
+    else if (action === 'in') {
+      setSequenceZoom((zoom) => Math.min(2, +(zoom + 0.1).toFixed(2)))
+    }
+  }
+  const handleViewSelect = (event) => {
+    const action = event.target.value
+    event.target.value = ''
+    if (action === 'theme') {
+      setTheme((currentTheme) => (currentTheme === 'light' ? 'dark' : 'light'))
+    } else if (action === 'grid') setShowGrid((grid) => !grid)
+    else if (action === 'fit') setFitNodeWidthToText((fit) => !fit)
+  }
 
   return (
     <div ref={containerRef} className="flex h-full w-full overflow-hidden">
-      {isCodePanelHidden ? (
+      {isCodePanelHidden && hideCodePanelToggle ? null : isCodePanelHidden ? (
         <div className="flex w-28 shrink-0 items-start justify-center border-r border-slate-700 bg-slate-900 py-2 text-slate-100">
           <button
             type="button"
@@ -2378,6 +2463,7 @@ function EditorInner({
             </div>
             <div className="flex items-center gap-1 border-b border-slate-700 bg-slate-800/60 px-2 py-1">
               <select
+                aria-label="Insert example template"
                 value=""
                 onChange={(e) => {
                   if (e.target.value) insertTemplate(e.target.value)
@@ -2468,7 +2554,8 @@ function EditorInner({
         }`}
       >
         <div
-          className={`flex flex-wrap items-center gap-2 border-b p-2 ${
+          data-testid="diagram-toolbar"
+          className={`flex flex-nowrap items-center gap-2 overflow-hidden border-b p-2 ${
             theme === 'dark'
               ? 'border-slate-700 bg-slate-800/80'
               : 'border-slate-200 bg-white/90'
@@ -2476,20 +2563,20 @@ function EditorInner({
         >
           {diagramMode !== 'sequence' && (
           <>
-          <div className="flex flex-wrap items-center gap-1 rounded-md border border-slate-300 bg-white/90 p-1 shadow-sm">
-            {ADD_NODE_SHAPES.map((shape) => (
-              <button
-                key={shape.key}
-                type="button"
-                aria-label={shape.label}
-                title={shape.label}
-                aria-pressed={addNodeShape === shape.key}
-                onClick={() => setAddNodeShape(shape.key)}
-                className={shapeBtnClass(shape.key)}
-              >
-                {shape.icon}
-              </button>
-            ))}
+          <div className="flex shrink-0 flex-nowrap items-center gap-1 rounded-md border border-slate-300 bg-white/90 p-1 shadow-sm">
+            <select
+              aria-label="Node shape"
+              value={addNodeShape}
+              onChange={(event) => setAddNodeShape(event.target.value)}
+              className={selectClass}
+              title="Node shape"
+            >
+              {ADD_NODE_SHAPES.map((shape) => (
+                <option key={shape.key} value={shape.key}>
+                  {shape.icon}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               aria-label="Add node"
@@ -2500,7 +2587,7 @@ function EditorInner({
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center gap-1 rounded-md border border-slate-300 bg-white/90 p-1 shadow-sm">
+          <div className="flex min-w-0 flex-nowrap items-center gap-1 rounded-md border border-slate-300 bg-white/90 p-1 shadow-sm">
             <input
               type="search"
               aria-label="Search nodes"
@@ -2508,28 +2595,28 @@ function EditorInner({
               onChange={handleSearchChange}
               onKeyDown={handleSearchKeyDown}
               placeholder="Search nodes"
-              className="h-8 w-44 rounded border border-slate-300 bg-white px-2 text-xs text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+              className="h-8 w-24 rounded border border-slate-300 bg-white px-2 text-xs text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
             />
-            <span className="min-w-8 text-center text-xs tabular-nums text-slate-600">
+            <span className="min-w-7 text-center text-xs tabular-nums text-slate-600">
               {searchStatus}
             </span>
             <button
               type="button"
               onClick={() => goToSearchMatch(-1)}
               disabled={searchMatches.length === 0}
-              className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
+              className={compactBtnClass}
               title="Previous match"
             >
-              Prev
+              &lt;
             </button>
             <button
               type="button"
               onClick={() => goToSearchMatch(1)}
               disabled={searchMatches.length === 0}
-              className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
+              className={compactBtnClass}
               title="Next match"
             >
-              Next
+              &gt;
             </button>
           </div>
 
@@ -2537,7 +2624,7 @@ function EditorInner({
           )}
 
           {diagramMode === 'sequence' && (
-            <div className="flex flex-wrap items-center gap-1 rounded-md border border-slate-300 bg-white/90 p-1 shadow-sm">
+            <div className="flex shrink-0 flex-nowrap items-center gap-1 rounded-md border border-slate-300 bg-white/90 p-1 shadow-sm">
               <input
                 type="search"
                 aria-label="Search sequence"
@@ -2545,143 +2632,118 @@ function EditorInner({
                 onChange={handleSearchChange}
                 onKeyDown={handleSearchKeyDown}
                 placeholder="Search sequence"
-                className="h-8 w-44 rounded border border-slate-300 bg-white px-2 text-xs text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                className="h-8 w-24 rounded border border-slate-300 bg-white px-2 text-xs text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
               />
-              <span className="min-w-8 text-center text-xs tabular-nums text-slate-600">
+              <span className="min-w-7 text-center text-xs tabular-nums text-slate-600">
                 {searchStatus}
               </span>
               <button
                 type="button"
                 onClick={() => goToSearchMatch(-1)}
                 disabled={searchMatches.length === 0}
-                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
+                className={compactBtnClass}
                 title="Previous match"
-              >
-                Prev
-              </button>
-              <button
-                type="button"
-                onClick={() => goToSearchMatch(1)}
-                disabled={searchMatches.length === 0}
-                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
-                title="Next match"
-              >
-                Next
-              </button>
-              <button
-                type="button"
-                aria-label="Add participant"
-                onClick={handleAddSequenceParticipant}
-                className={btnClass}
-              >
-                + Participant
-              </button>
-              <button
-                type="button"
-                aria-label="Add message"
-                onClick={handleAddSequenceMessage}
-                disabled={sequenceModel.participants.length < 2}
-                className={`${btnClass} disabled:opacity-40`}
-              >
-                + Message
-              </button>
-              <button
-                type="button"
-                aria-label="Move participant left"
-                onClick={() => moveSelectedSequenceParticipant(-1)}
-                disabled={selectedSequenceIndex <= 0}
-                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
-                title="Move participant left"
               >
                 &lt;
               </button>
               <button
                 type="button"
-                aria-label="Move participant right"
-                onClick={() => moveSelectedSequenceParticipant(1)}
-                disabled={
-                  selectedSequenceIndex < 0 ||
-                  selectedSequenceIndex >= sequenceModel.participants.length - 1
-                }
-                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700 disabled:opacity-40"
-                title="Move participant right"
+                onClick={() => goToSearchMatch(1)}
+                disabled={searchMatches.length === 0}
+                className={compactBtnClass}
+                title="Next match"
               >
                 &gt;
               </button>
-              <button
-                type="button"
-                aria-label="Zoom out sequence"
-                onClick={() =>
-                  setSequenceZoom((zoom) => Math.max(0.5, +(zoom - 0.1).toFixed(2)))
-                }
-                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700"
-                title="Zoom out sequence"
+              <select
+                aria-label="Add sequence item"
+                defaultValue=""
+                onChange={handleSequenceAddSelect}
+                className={narrowSelectClass}
+                title="Add sequence item"
               >
-                -
-              </button>
-              <button
-                type="button"
-                aria-label="Reset sequence zoom"
-                onClick={() => setSequenceZoom(1)}
-                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700"
-                title="Reset sequence zoom"
+                <option value="" disabled>
+                  Add
+                </option>
+                <option value="participant">Participant</option>
+                <option value="message" disabled={sequenceModel.participants.length < 2}>
+                  Message
+                </option>
+              </select>
+              <select
+                aria-label="Move participant"
+                defaultValue=""
+                onChange={handleSequenceMoveSelect}
+                className={narrowSelectClass}
+                title="Move participant"
               >
-                {Math.round(sequenceZoom * 100)}%
-              </button>
-              <button
-                type="button"
-                aria-label="Zoom in sequence"
-                onClick={() =>
-                  setSequenceZoom((zoom) => Math.min(2, +(zoom + 0.1).toFixed(2)))
-                }
-                className="h-8 rounded border border-slate-300 px-2 text-xs font-medium text-slate-700"
-                title="Zoom in sequence"
+                <option value="" disabled>
+                  Move
+                </option>
+                <option value="left" disabled={selectedSequenceIndex <= 0}>
+                  Left
+                </option>
+                <option
+                  value="right"
+                  disabled={
+                    selectedSequenceIndex < 0 ||
+                    selectedSequenceIndex >= sequenceModel.participants.length - 1
+                  }
+                >
+                  Right
+                </option>
+              </select>
+              <select
+                aria-label="Zoom sequence"
+                defaultValue=""
+                onChange={handleSequenceZoomSelect}
+                className={narrowSelectClass}
+                title="Zoom sequence"
               >
-                +
-              </button>
+                <option value="" disabled>
+                  {Math.round(sequenceZoom * 100)}%
+                </option>
+                <option value="out">Zoom out</option>
+                <option value="reset">Reset</option>
+                <option value="in">Zoom in</option>
+              </select>
             </div>
           )}
 
-          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-            <button type="button" onClick={() => exportImage('png')} className={btnClass}>
-              PNG
-            </button>
-            <button type="button" onClick={() => exportImage('svg')} className={btnClass}>
-              SVG
-            </button>
-            <button type="button" onClick={exportMmd} className={btnClass}>
-              .mmd
-            </button>
-            <button type="button" onClick={copyCode} className={btnClass}>
-              Copy
-            </button>
-            <button
-              type="button"
-              onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
-              className={btnClass}
+          <div className="ml-auto flex shrink-0 flex-nowrap items-center justify-end gap-2">
+            <select
+              aria-label="Export diagram"
+              defaultValue=""
+              onChange={handleExportSelect}
+              className={selectClass}
+              title="Export diagram"
             >
-              {theme === 'light' ? 'Dark' : 'Light'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowGrid((g) => !g)}
-              className={btnClass}
+              <option value="" disabled>
+                Export
+              </option>
+              <option value="png">PNG image</option>
+              <option value="svg">SVG image</option>
+              <option value="mmd">Mermaid .mmd</option>
+              <option value="copy">Copy Mermaid</option>
+            </select>
+            <select
+              aria-label="View options"
+              defaultValue=""
+              onChange={handleViewSelect}
+              className={selectClass}
+              title="View options"
             >
-              {showGrid ? 'Grid off' : 'Grid on'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setFitNodeWidthToText((v) => !v)}
-              aria-pressed={fitNodeWidthToText}
-              className={
-                fitNodeWidthToText
-                  ? 'rounded-md border border-blue-500 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 shadow-sm ring-2 ring-blue-500 hover:bg-blue-50'
-                  : btnClass
-              }
-              title="Fit node width to text"
-            >
-              {fitNodeWidthToText ? 'Fit width ON' : 'Fit width OFF'}
-            </button>
+              <option value="" disabled>
+                View
+              </option>
+              <option value="theme">
+                {theme === 'light' ? 'Dark theme' : 'Light theme'}
+              </option>
+              <option value="grid">{showGrid ? 'Grid off' : 'Grid on'}</option>
+              <option value="fit">
+                {fitNodeWidthToText ? 'Fit width off' : 'Fit width on'}
+              </option>
+            </select>
           </div>
         </div>
 
@@ -2696,6 +2758,7 @@ function EditorInner({
               code={code}
               sequenceSvg={sequenceSvg}
               theme={theme}
+              showGrid={showGrid}
               selectedElement={selectedSequenceElement}
               focusRequestKey={sequenceFocusRequestKey}
               zoom={sequenceZoom}
@@ -2866,10 +2929,51 @@ const STORAGE_KEY = 'mermaid-gilview-workspace'
 const DEFAULT_WORKSPACE = {
   tabs: [{ id: 1, name: 'Diagram 1', code: INITIAL_CODE }],
   activeId: 1,
-  settings: { theme: 'light', showGrid: true, fitNodeWidthToText: false, leftWidth: 440 },
+  settings: {
+    theme: 'light',
+    showGrid: true,
+    fitNodeWidthToText: false,
+    leftWidth: 440,
+    codePanelHidden: false,
+    hideCodePanelToggle: false,
+  },
+}
+
+function decodeBase64UrlUtf8(value) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+  const binary = atob(padded)
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+  return new TextDecoder().decode(bytes)
+}
+
+function loadEmbedWorkspace() {
+  try {
+    const hash = window.location.hash.replace(/^#/, '')
+    if (!hash) return null
+    const params = new URLSearchParams(hash)
+    if (params.get('embed') !== '1') return null
+    const encodedCode = params.get('code')
+    if (!encodedCode) return null
+    const theme = params.get('theme')
+    return {
+      tabs: [{ id: 1, name: 'Diagram 1', code: decodeBase64UrlUtf8(encodedCode) }],
+      activeId: 1,
+      settings: {
+        ...DEFAULT_WORKSPACE.settings,
+        theme: theme === 'dark' ? 'dark' : DEFAULT_WORKSPACE.settings.theme,
+        codePanelHidden: params.get('hideCode') === '1',
+        hideCodePanelToggle: params.get('hideCode') === '1',
+      },
+    }
+  } catch {
+    return null
+  }
 }
 
 function loadWorkspace() {
+  const embedWorkspace = loadEmbedWorkspace()
+  if (embedWorkspace) return embedWorkspace
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return DEFAULT_WORKSPACE
@@ -3108,6 +3212,8 @@ export default function MermaidVisualEditor() {
             setFitNodeWidthToText={setFitNodeWidthToText}
             leftWidth={leftWidth}
             setLeftWidth={setLeftWidth}
+            initialCodePanelHidden={init.settings.codePanelHidden}
+            hideCodePanelToggle={init.settings.hideCodePanelToggle}
           />
         </ReactFlowProvider>
       </div>
