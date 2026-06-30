@@ -33,6 +33,25 @@ describe('sequenceDiagram editor helpers', () => {
     })
   })
 
+  it('parses Korean implicit participant ids from messages', () => {
+    const model = parseSequenceEditorModel(
+      [
+        'sequenceDiagram',
+        '  사용자->>서버: 요청 전송',
+        '  서버-->>사용자: 응답 반환',
+      ].join('\n'),
+    )
+
+    expect(model.participants.map((participant) => participant.id)).toEqual([
+      '사용자',
+      '서버',
+    ])
+    expect(model.messages.map((message) => message.label)).toEqual([
+      '요청 전송',
+      '응답 반환',
+    ])
+  })
+
   it('renames a participant by updating its declaration label', () => {
     expect(renameSequenceParticipant(code, 'A', 'Alice Prime')).toContain(
       '  participant A as Alice Prime',

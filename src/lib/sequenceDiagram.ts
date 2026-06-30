@@ -63,16 +63,17 @@ export interface SequenceEditorModel {
   activations: SequenceActivation[]
 }
 
+const PARTICIPANT_ID_RE = String.raw`[^\s:]+?`
 const PARTICIPANT_RE =
-  /^(\s*)(participant|actor)\s+([A-Za-z_][\w.]*)(?:\s+as\s+(.+))?\s*$/i
+  new RegExp(String.raw`^(\s*)(participant|actor)\s+(${PARTICIPANT_ID_RE})(?:\s+as\s+(.+))?\s*$`, 'i')
 const MESSAGE_RE =
-  /^(\s*)([A-Za-z_][\w.]*)\s*([-.=xo]*[-=]+(?:>>?|[)x])[+-]?)\s*([A-Za-z_][\w.]*)\s*:\s*(.*)$/
+  new RegExp(String.raw`^(\s*)(${PARTICIPANT_ID_RE})\s*([-.=xo]*[-=]+(?:>>?|[)x])[+-]?)\s*(${PARTICIPANT_ID_RE})\s*:\s*(.*)$`)
 const FRAGMENT_START_RE = /^\s*(loop|alt|opt|par|critical|break|rect)\b\s*(.*)$/i
 const FRAGMENT_ELSE_RE = /^\s*else\b\s*(.*)$/i
 const FRAGMENT_END_RE = /^\s*end\s*$/i
 const NOTE_RE = /^\s*Note\s+(left of|right of|over)\s+([^:]+):\s*(.*)$/i
-const ACTIVATE_RE = /^\s*activate\s+([A-Za-z_][\w.]*)\s*$/i
-const DEACTIVATE_RE = /^\s*deactivate\s+([A-Za-z_][\w.]*)\s*$/i
+const ACTIVATE_RE = new RegExp(String.raw`^\s*activate\s+(${PARTICIPANT_ID_RE})\s*$`, 'i')
+const DEACTIVATE_RE = new RegExp(String.raw`^\s*deactivate\s+(${PARTICIPANT_ID_RE})\s*$`, 'i')
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))

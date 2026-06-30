@@ -5,6 +5,7 @@
 html, body, #root {
   height: 100%;
   margin: 0;
+  overflow: hidden;
 }
 
 /* 다크 테마에서 연결선이 너무 어두워 안 보이는 문제 보정 */
