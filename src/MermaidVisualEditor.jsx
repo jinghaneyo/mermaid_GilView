@@ -15,6 +15,7 @@ import {
   useReactFlow,
 } from '@xyflow/react'
 import { toPng, toSvg } from 'html-to-image'
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import mermaid from 'mermaid'
 import '@xyflow/react/dist/style.css'
 
@@ -774,9 +775,9 @@ function SequenceCanvas({
   const renderWidth = diagramWidth
   const renderHeight = diagramHeight
   const bottomY = diagramHeight - participantHeight - 24
-  const minimapWidth = 144
-  const minimapHeight = 78
-  const minimapPadding = 8
+  const minimapWidth = 200
+  const minimapHeight = 150
+  const minimapPadding = 10
   const minimapPlotWidth = minimapWidth - minimapPadding * 2
   const minimapPlotHeight = minimapHeight - minimapPadding * 2
   const isDark = theme === 'dark'
@@ -1388,23 +1389,19 @@ function SequenceCanvas({
       <div
         data-no-canvas-pan="true"
         data-testid="sequence-minimap"
-        className={`sticky bottom-4 right-4 z-20 ml-auto mr-4 w-36 rounded border p-2 text-xs shadow ${
+        className={`absolute bottom-4 right-4 z-20 h-[150px] w-[200px] overflow-hidden rounded-sm border shadow ${
           isDark
-            ? 'border-slate-600 bg-slate-800/95 text-slate-200'
-            : 'border-slate-200 bg-white/95 text-slate-700'
+            ? 'border-slate-600 bg-slate-800/95'
+            : 'border-slate-200 bg-white/95'
         }`}
       >
-        <div className="mb-1 flex justify-between">
-          <span>{model.participants.length} participants</span>
-          <span>{Math.round(zoom * 100)}%</span>
-        </div>
         <svg
           data-testid="sequence-minimap-svg"
           aria-label="Sequence diagram minimap"
           width={minimapWidth}
           height={minimapHeight}
           viewBox={`0 0 ${minimapWidth} ${minimapHeight}`}
-          className="block cursor-crosshair rounded border border-slate-300"
+          className="block cursor-crosshair"
           onMouseDown={(event) => {
             event.stopPropagation()
             minimapDraggingRef.current = true
@@ -1574,6 +1571,7 @@ function EditorInner({
   const [selectedSequenceElement, setSelectedSequenceElement] = useState(null)
   const [sequenceFocusRequestKey, setSequenceFocusRequestKey] = useState(0)
   const [sequenceZoom, setSequenceZoom] = useState(1)
+  const [isCodePanelHidden, setIsCodePanelHidden] = useState(false)
   const [codeLineMetrics, setCodeLineMetrics] = useState({
     lineHeight: 22,
     paddingTop: 16,
@@ -2343,96 +2341,125 @@ function EditorInner({
 
   return (
     <div ref={containerRef} className="flex h-full w-full overflow-hidden">
-      <div
-        style={{ width: leftWidth }}
-        className="flex shrink-0 flex-col bg-slate-900 text-slate-100"
-      >
-        <div className="flex items-center justify-between border-b border-slate-700 px-4 py-2.5">
-          <h1 className="text-sm font-semibold tracking-tight">Mermaid code</h1>
-          <span className="text-xs text-slate-400">flowchart / sequence</span>
-        </div>
-        <div className="flex items-center gap-1 border-b border-slate-700 bg-slate-800/60 px-2 py-1">
-          <select
-            value=""
-            onChange={(e) => {
-              if (e.target.value) insertTemplate(e.target.value)
-            }}
-            className="rounded bg-slate-700 px-1.5 py-1 text-xs text-slate-200 outline-none"
-            title="Insert example template"
-          >
-            <option value="">Insert example...</option>
-            <option value="basic">Basic flowchart</option>
-            <option value="decision">Decision branch</option>
-            <option value="subgraph">Subgraph</option>
-            <option value="shapes">Shapes</option>
-            <option value="sequence">Sequence diagram</option>
-          </select>
+      {isCodePanelHidden ? (
+        <div className="flex w-28 shrink-0 items-start justify-center border-r border-slate-700 bg-slate-900 py-2 text-slate-100">
           <button
             type="button"
-            onClick={toggleDirection}
-            className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
-            title="Toggle flowchart direction"
+            aria-label="Show code"
+            onClick={() => setIsCodePanelHidden(false)}
+            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-blue-500 bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white shadow-sm ring-1 ring-blue-300/40 hover:bg-blue-500 active:translate-y-px"
+            title="Show Mermaid code"
           >
-            Direction
-          </button>
-          <button
-            type="button"
-            onClick={undo}
-            className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
-            title="Undo (Ctrl+Z)"
-          >
-            Undo
-          </button>
-          <button
-            type="button"
-            onClick={redo}
-            className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
-            title="Redo (Ctrl+Y)"
-          >
-            Redo
+            <PanelLeftOpen aria-hidden="true" size={14} strokeWidth={2.5} />
+            <span>Show code</span>
           </button>
         </div>
-        <div className="relative min-h-0 flex-1">
-        <textarea
-          ref={codeTextareaRef}
-          value={code}
-          onChange={handleCodeChange}
-          onClick={handleCodeClick}
-          onKeyDown={onCodeKeyDown}
-          onScroll={handleCodeScroll}
-          spellCheck={false}
-          wrap="off"
-          className="code-editor-textarea h-full w-full resize-none bg-slate-900 p-4 font-mono text-sm leading-relaxed text-slate-100 outline-none"
-          placeholder={'graph TD\\n  A[Start] --> B[End]'}
-        />
-          {highlightedCodeLine && (
-            <div
-              key={highlightedCodeLine.key}
-              className="code-line-flash pointer-events-none absolute left-0 right-0"
-              style={{
-                top:
-                  codeLineMetrics.paddingTop +
-                  highlightedCodeLine.line * codeLineMetrics.lineHeight -
-                  codeScrollTop,
-                height: codeLineMetrics.lineHeight,
-              }}
+      ) : (
+        <>
+          <div
+            style={{ width: leftWidth }}
+            className="flex shrink-0 flex-col bg-slate-900 text-slate-100"
+          >
+            <div className="flex items-center justify-between border-b border-slate-700 px-4 py-2.5">
+              <h1 className="text-sm font-semibold tracking-tight">Mermaid code</h1>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-400">flowchart / sequence</span>
+                <button
+                  type="button"
+                  aria-label="Hide code"
+                  onClick={() => setIsCodePanelHidden(true)}
+                  className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-amber-300 bg-amber-400 px-2.5 py-1 text-xs font-semibold text-slate-950 shadow-sm ring-1 ring-amber-200/60 hover:bg-amber-300 active:translate-y-px"
+                  title="Hide Mermaid code"
+                >
+                  <PanelLeftClose aria-hidden="true" size={14} strokeWidth={2.5} />
+                  <span>Hide code</span>
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 border-b border-slate-700 bg-slate-800/60 px-2 py-1">
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) insertTemplate(e.target.value)
+                }}
+                className="rounded bg-slate-700 px-1.5 py-1 text-xs text-slate-200 outline-none"
+                title="Insert example template"
+              >
+                <option value="">Insert example...</option>
+                <option value="basic">Basic flowchart</option>
+                <option value="decision">Decision branch</option>
+                <option value="subgraph">Subgraph</option>
+                <option value="shapes">Shapes</option>
+                <option value="sequence">Sequence diagram</option>
+              </select>
+              <button
+                type="button"
+                onClick={toggleDirection}
+                className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
+                title="Toggle flowchart direction"
+              >
+                Direction
+              </button>
+              <button
+                type="button"
+                onClick={undo}
+                className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
+                title="Undo (Ctrl+Z)"
+              >
+                Undo
+              </button>
+              <button
+                type="button"
+                onClick={redo}
+                className="rounded px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-white"
+                title="Redo (Ctrl+Y)"
+              >
+                Redo
+              </button>
+            </div>
+            <div className="relative min-h-0 flex-1">
+            <textarea
+              ref={codeTextareaRef}
+              value={code}
+              onChange={handleCodeChange}
+              onClick={handleCodeClick}
+              onKeyDown={onCodeKeyDown}
+              onScroll={handleCodeScroll}
+              spellCheck={false}
+              wrap="off"
+              className="code-editor-textarea h-full w-full resize-none bg-slate-900 p-4 font-mono text-sm leading-relaxed text-slate-100 outline-none"
+              placeholder={'graph TD\\n  A[Start] --> B[End]'}
             />
-          )}
-        </div>
-        {error && (
-          <div className="border-t border-red-800 bg-red-950/80 px-4 py-2 font-mono text-xs text-red-300">
-            {error}
+              {highlightedCodeLine && (
+                <div
+                  key={highlightedCodeLine.key}
+                  className="code-line-flash pointer-events-none absolute left-0 right-0"
+                  style={{
+                    top:
+                      codeLineMetrics.paddingTop +
+                      highlightedCodeLine.line * codeLineMetrics.lineHeight -
+                      codeScrollTop,
+                    height: codeLineMetrics.lineHeight,
+                  }}
+                />
+              )}
+            </div>
+            {error && (
+              <div className="border-t border-red-800 bg-red-950/80 px-4 py-2 font-mono text-xs text-red-300">
+                {error}
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      <div
-        onMouseDown={onSplitterMouseDown}
-        title="Drag to resize panels"
-        className="group flex w-2.5 shrink-0 cursor-col-resize items-center justify-center bg-slate-600 transition-colors hover:bg-blue-500"
-      >
-        <div className="h-10 w-1 rounded-full bg-slate-300 group-hover:bg-white" />
-      </div>
+          <div
+            onMouseDown={onSplitterMouseDown}
+            title="Drag to resize panels"
+            className="group flex w-2.5 shrink-0 cursor-col-resize items-center justify-center bg-slate-600 transition-colors hover:bg-blue-500"
+          >
+            <div className="h-10 w-1 rounded-full bg-slate-300 group-hover:bg-white" />
+          </div>
+        </>
+      )}
 
       <div
         data-testid="diagram-pane"

@@ -284,6 +284,38 @@ describe('MermaidVisualEditor: node label editing', () => {
     })
   })
 
+  it('hides and restores the Mermaid code panel while keeping the diagram visible', async () => {
+    const code = 'graph TD\n  A[Start] --> B[End]'
+    const getCodeEditor = () =>
+      screen.queryAllByRole('textbox').find((textbox) => textbox.value === code)
+    loadTestDiagram(code)
+    render(<MermaidVisualEditor />)
+
+    expect(await screen.findByText('Start')).toBeTruthy()
+    expect(getCodeEditor()).toBeTruthy()
+
+    const hideCodeButton = screen.getByRole('button', { name: 'Hide code' })
+    expect(hideCodeButton.className).toContain('bg-amber-400')
+    expect(hideCodeButton.className).toContain('text-slate-950')
+    expect(hideCodeButton.textContent).not.toContain('<<')
+    expect(hideCodeButton.querySelector('svg')).toBeTruthy()
+
+    fireEvent.click(hideCodeButton)
+
+    expect(getCodeEditor()).toBeFalsy()
+    expect(screen.queryByTitle('Drag to resize panels')).toBeFalsy()
+    expect(screen.getByText('Start')).toBeTruthy()
+
+    const showCodeButton = screen.getByRole('button', { name: 'Show code' })
+    expect(showCodeButton.textContent).not.toContain('>>')
+    expect(showCodeButton.querySelector('svg')).toBeTruthy()
+
+    fireEvent.click(showCodeButton)
+
+    expect(getCodeEditor()).toBeTruthy()
+    expect(screen.getByTitle('Drag to resize panels')).toBeTruthy()
+  })
+
   it('renders sequence diagrams with a visual editor canvas', async () => {
     const code = [
       'sequenceDiagram',
@@ -785,8 +817,15 @@ describe('MermaidVisualEditor: node label editing', () => {
       expect(screen.getByTestId('sequence-diagram-surface').style.transform).toBe(
         'scale(1.1)',
       )
-      expect(screen.getByTestId('sequence-minimap').textContent).toContain('110%')
-      expect(screen.getByTestId('sequence-minimap-svg')).toBeTruthy()
+      const minimap = screen.getByTestId('sequence-minimap')
+      const minimapSvg = screen.getByTestId('sequence-minimap-svg')
+      expect(minimap.className).toContain('absolute')
+      expect(minimap.className).toContain('bottom-4')
+      expect(minimap.className).toContain('right-4')
+      expect(minimap.textContent).not.toContain('participants')
+      expect(minimap.textContent).not.toContain('110%')
+      expect(minimapSvg.getAttribute('width')).toBe('200')
+      expect(minimapSvg.getAttribute('height')).toBe('150')
       expect(screen.getAllByTestId('sequence-minimap-participant')).toHaveLength(2)
       expect(screen.getAllByTestId('sequence-minimap-message')).toHaveLength(1)
     })
@@ -850,10 +889,10 @@ describe('MermaidVisualEditor: node label editing', () => {
       y: 0,
       left: 0,
       top: 0,
-      right: 144,
-      bottom: 78,
-      width: 144,
-      height: 78,
+      right: 200,
+      bottom: 150,
+      width: 200,
+      height: 150,
       toJSON: () => {},
     })
 
@@ -942,7 +981,9 @@ describe('MermaidVisualEditor: node label editing', () => {
       expect(screen.getByTestId('sequence-diagram-surface').style.transform).toBe(
         'scale(1.1)',
       )
-      expect(screen.getByTestId('sequence-minimap').textContent).toContain('110%')
+      expect(screen.getByTestId('sequence-minimap').textContent).not.toContain(
+        '110%',
+      )
     })
   })
 
