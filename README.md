@@ -73,7 +73,7 @@ npm run preview
 .github/workflows/deploy.yml
 ```
 
-이 워크플로우는 `main` 브랜치에 push될 때 `npm run build`를 실행하고 `dist/`를 GitHub Pages에 배포합니다.
+이 워크플로우는 `main` 브랜치에 push될 때 `npm test`로 테스트를 통과한 뒤 `npm run build`를 실행하고 `dist/`를 GitHub Pages에 배포합니다. 테스트가 실패하면 배포하지 않습니다.
 
 단, GitHub 저장소 설정에서 Pages가 GitHub Actions 배포 방식으로 활성화되어 있어야 합니다.
 
@@ -95,7 +95,8 @@ Pages를 사용하지 않고 Release의 단일 HTML 파일만 배포한다면 �
 - subgraph 그룹 박스 이동 및 내부 노드 동반 이동
 - 여러 다이어그램을 탭으로 관리
 - 라이트/다크 테마 및 격자 표시
-- PNG, SVG, `.mmd`, Mermaid 코드 내보내기
+- PNG, SVG, `.mmd`, Mermaid 코드 내보내기. SVG는 화면의 HTML을 그대로 담은 형식이라 브라우저에서는 잘 열리지만 일부 그림 편집 프로그램에서는 글자가 보이지 않을 수 있습니다.
+- `.mmd`, `.md`, `.txt`, `.mmdf` 파일 가져오기(새 탭으로 열기 또는 코드 영역에 끌어다 놓기). 마크다운 파일은 첫 번째 ` ```mermaid ` 블록만 가져옵니다.
 - JSON 백업 및 복원
 - 브라우저 자동 저장
 

@@ -1,4 +1,8 @@
-import { formatMermaidLabel } from './updateNodeLabelInMermaid'
+import {
+  escapeRegExp,
+  formatMermaidLabel,
+  stripQuotedText,
+} from './updateNodeLabelInMermaid'
 
 export type AddNodeShape =
   | 'rect'
@@ -82,17 +86,13 @@ function formatNodeDeclaration(
   }
 }
 
-function stripQuotedText(line: string): string {
-  return line.replace(/"([^"\\]|\\.)*"/g, '""')
-}
-
 function withLineIndent(declaration: string, anchorLine: string): string {
   const indent = anchorLine.match(/^\s*/)?.[0] ?? ''
   return `${indent}${declaration.trimStart()}`
 }
 
 function findNodeLineIndex(lines: string[], id: string): number {
-  const escapedId = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const escapedId = escapeRegExp(id)
   const declarationPattern = new RegExp(
     `(^|[^A-Za-z0-9_])${escapedId}(\\(\\[|\\[\\(|\\(\\(|\\[|\\{|\\()`,
   )

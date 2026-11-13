@@ -1,7 +1,12 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { toPng } from 'html-to-image'
 import MermaidVisualEditor from './MermaidVisualEditor'
-import { convertCanvasToMermaid } from './MermaidVisualEditor'
+
+vi.mock('html-to-image', () => ({
+  toPng: vi.fn(async () => 'data:image/png;base64,'),
+  toSvg: vi.fn(async () => 'data:image/svg+xml,'),
+}))
 
 beforeEach(() => {
   localStorage.clear()
@@ -22,69 +27,6 @@ beforeEach(() => {
   if (!SVGElement.prototype.getComputedTextLength) {
     SVGElement.prototype.getComputedTextLength = () => 80
   }
-})
-
-describe('MermaidVisualEditor: convertCanvasToMermaid (canvas -> code)', () => {
-  it('graph TD 헤더와 노드 라벨, 엣지를 출력한다', () => {
-    const nodes = [
-      { id: 'A', data: { label: '시작' }, position: { x: 0, y: 0 } },
-      { id: 'B', data: { label: '종료' }, position: { x: 0, y: 0 } },
-    ]
-    const edges = [{ id: 'A-B', source: 'A', target: 'B' }]
-    expect(convertCanvasToMermaid(nodes, edges)).toBe(
-      'graph TD\n  A[시작]\n  B[종료]\n  A --> B',
-    )
-  })
-
-  it('엣지 라벨이 있으면 A -->|라벨| B 로 출력한다', () => {
-    const nodes = [
-      { id: 'A', data: { label: '조건' }, position: { x: 0, y: 0 } },
-      { id: 'B', data: { label: '처리' }, position: { x: 0, y: 0 } },
-    ]
-    const edges = [{ id: 'A-B', source: 'A', target: 'B', label: '예' }]
-    expect(convertCanvasToMermaid(nodes, edges)).toBe(
-      'graph TD\n  A[조건]\n  B[처리]\n  A -->|예| B',
-    )
-  })
-
-  it('라벨이 비면 노드 ID를 라벨로 쓴다', () => {
-    const nodes = [{ id: 'X', data: { label: '' }, position: { x: 0, y: 0 } }]
-    expect(convertCanvasToMermaid(nodes, [])).toBe('graph TD\n  X[X]')
-  })
-})
-
-describe('MermaidVisualEditor: custom node sizes', () => {
-  it('preserves custom node size comments when exporting canvas nodes', () => {
-    const nodes = [
-      {
-        id: 'main',
-        data: { label: 'Main', customSize: true },
-        position: { x: 0, y: 0 },
-        width: 260,
-        height: 120,
-      },
-    ]
-
-    expect(convertCanvasToMermaid(nodes, [])).toBe(
-      'graph TD\n%% gilview:node main width=260 height=120\n  main[Main]',
-    )
-  })
-})
-
-describe('MermaidVisualEditor: safe Mermaid labels', () => {
-  it('quotes node labels that include Mermaid shape syntax characters', () => {
-    const nodes = [
-      {
-        id: 'main',
-        data: { label: 'main() (진입점/설정파싱2)' },
-        position: { x: 0, y: 0 },
-      },
-    ]
-
-    expect(convertCanvasToMermaid(nodes, [])).toBe(
-      'graph TD\n  main["main() (진입점/설정파싱2)"]',
-    )
-  })
 })
 
 describe('MermaidVisualEditor: node label editing', () => {
@@ -1027,6 +969,81 @@ describe('MermaidVisualEditor: node label editing', () => {
     expect(screen.getByRole('combobox', { name: 'View options' })).toBeTruthy()
   })
 
+  it('loads dropped .mmdf Mermaid files into the active diagram', async () => {
+    const initialCode = 'graph TD\n  Old[Initial]'
+    loadTestDiagram(initialCode)
+    render(<MermaidVisualEditor />)
+
+    const nextCode = 'graph TD\n  File[From file] --> Rendered[Diagram]'
+    const editor = (await screen.findAllByRole('textbox')).find((textbox) =>
+      textbox.className.includes('code-editor-textarea'),
+    )
+    const file = new File([nextCode], 'dropped.mmdf', { type: 'text/plain' })
+
+    fireEvent.dragOver(editor, { dataTransfer: { files: [file], types: ['Files'] } })
+    fireEvent.drop(editor, { dataTransfer: { files: [file], types: ['Files'] } })
+
+    await waitFor(() => {
+      expect(editor.value).toBe(nextCode)
+      expect(screen.getByText('From file')).toBeTruthy()
+      expect(screen.getByText('Diagram')).toBeTruthy()
+    })
+  })
+
+  it('ignores dropped Mermaid files with unsupported extensions', async () => {
+    const initialCode = 'graph TD\n  Keep[Current]'
+    loadTestDiagram(initialCode)
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    render(<MermaidVisualEditor />)
+
+    const editor = (await screen.findAllByRole('textbox')).find((textbox) =>
+      textbox.className.includes('code-editor-textarea'),
+    )
+    const file = new File(['graph TD\n  Bad[Ignored]'], 'ignored.json', {
+      type: 'application/json',
+    })
+
+    fireEvent.drop(editor, { dataTransfer: { files: [file], types: ['Files'] } })
+
+    expect(editor.value).toBe(initialCode)
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Only .mmd, .md, .txt, and .mmdf files are supported.',
+    )
+
+    alertSpy.mockRestore()
+  })
+
+  it('loads the diagram exported as .mmd and the mermaid block of a CRLF markdown file', async () => {
+    loadTestDiagram('graph TD\n  Old[Initial]')
+    render(<MermaidVisualEditor />)
+    const editor = (await screen.findAllByRole('textbox')).find((textbox) =>
+      textbox.className.includes('code-editor-textarea'),
+    )
+
+    const mmdCode = 'graph TD\n  Mmd[From mmd]'
+    const mmd = new File([mmdCode], 'diagram.mmd', { type: 'text/plain' })
+    fireEvent.drop(editor, { dataTransfer: { files: [mmd], types: ['Files'] } })
+    await waitFor(() => expect(editor.value).toBe(mmdCode))
+
+    const markdown = [
+      '# Notes',
+      '',
+      '```mermaid',
+      'graph TD',
+      '  Md[From markdown] --> Done[Done]',
+      '```',
+      '',
+      'More text',
+    ].join('\r\n')
+    const md = new File([markdown], 'notes.md', { type: 'text/markdown' })
+    fireEvent.drop(editor, { dataTransfer: { files: [md], types: ['Files'] } })
+
+    await waitFor(() => {
+      expect(editor.value).toBe('graph TD\n  Md[From markdown] --> Done[Done]')
+      expect(screen.getByText('From markdown')).toBeTruthy()
+    })
+  })
+
   it('pans and zooms the sequence diagram from the minimap', async () => {
     const code = [
       'sequenceDiagram',
@@ -1275,5 +1292,188 @@ describe('MermaidVisualEditor: node label editing', () => {
           ),
       ).toBe(true)
     })
+  })
+})
+
+describe('MermaidVisualEditor: workspace safety and sync', () => {
+  const STORAGE_KEY = 'mermaid-gilview-workspace'
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const saveWorkspace = (tabs, activeId = tabs[0]?.id) =>
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ tabs, activeId, settings: {} }))
+  const savedWorkspace = () => JSON.parse(localStorage.getItem(STORAGE_KEY))
+  const codeEditor = () => screen.getByLabelText('Mermaid code')
+
+  it('does not overwrite the saved workspace when opened from an embed link', async () => {
+    const tabs = [
+      { id: 1, name: 'Mine', code: 'graph TD\n  Saved[Saved] --> X' },
+      { id: 2, name: 'Mine 2', code: 'graph TD\n  Y --> Z' },
+    ]
+    saveWorkspace(tabs)
+    const encoded = btoa('graph TD\n  E[Embed] --> F')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '')
+    window.history.replaceState(null, '', `/#embed=1&code=${encoded}`)
+
+    render(<MermaidVisualEditor />)
+    expect(await screen.findByText('Embed')).toBeTruthy()
+    await sleep(600)
+
+    expect(savedWorkspace().tabs).toEqual(tabs)
+  })
+
+  it('keeps the canvas in sync when undoing right after typing', async () => {
+    saveWorkspace([{ id: 1, name: 'T', code: 'graph TD\n  A[Start] --> B[End]' }])
+    render(<MermaidVisualEditor />)
+    await screen.findByText('Start')
+
+    fireEvent.change(codeEditor(), {
+      target: { value: 'graph TD\n  A[Start] --> B[End]\n  C[Typed]' },
+    })
+    fireEvent.keyDown(codeEditor(), { key: 'z', ctrlKey: true })
+    await sleep(400)
+
+    expect(codeEditor().value).toBe('graph TD\n  A[Start] --> B[End]')
+    expect(screen.queryByText('Typed')).toBeNull()
+  })
+
+  it('saves edits even when the stored active tab id does not exist', async () => {
+    saveWorkspace([{ id: 1, name: 'T', code: 'graph TD\n  A[Start] --> B[End]' }], 99)
+    render(<MermaidVisualEditor />)
+    await screen.findByText('Start')
+
+    fireEvent.change(codeEditor(), { target: { value: 'graph TD\n  A[Edited] --> B[End]' } })
+    await sleep(600)
+
+    expect(savedWorkspace().tabs[0].code).toBe('graph TD\n  A[Edited] --> B[End]')
+  })
+
+  it('shows the restored diagram even when the backup uses the same tab id', async () => {
+    saveWorkspace([{ id: 1, name: 'Current', code: 'graph TD\n  Cur[Current]' }])
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { container } = render(<MermaidVisualEditor />)
+    await screen.findByText('Current', { selector: '.react-flow__node *' })
+
+    const backup = {
+      version: 1,
+      tabs: [{ id: 1, name: 'Restored', code: 'graph TD\n  R[From backup]' }],
+      activeId: 1,
+    }
+    const file = new File([JSON.stringify(backup)], 'backup.json', {
+      type: 'application/json',
+    })
+    fireEvent.change(container.querySelector('input[accept=".json"]'), {
+      target: { files: [file] },
+    })
+
+    await waitFor(() => {
+      expect(codeEditor().value).toBe('graph TD\n  R[From backup]')
+      expect(screen.getByText('From backup')).toBeTruthy()
+    })
+    confirmSpy.mockRestore()
+  })
+
+  it('rejects a backup whose tabs have no Mermaid code', async () => {
+    saveWorkspace([{ id: 1, name: 'Current', code: 'graph TD\n  Cur[Current]' }])
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    const { container } = render(<MermaidVisualEditor />)
+    await screen.findByText('Current', { selector: '.react-flow__node *' })
+
+    const file = new File([JSON.stringify({ tabs: [{ id: 1, code: 42 }] })], 'bad.json', {
+      type: 'application/json',
+    })
+    fireEvent.change(container.querySelector('input[accept=".json"]'), {
+      target: { files: [file] },
+    })
+
+    await waitFor(() =>
+      expect(alertSpy).toHaveBeenCalledWith('The backup file has no diagrams to restore.'),
+    )
+    expect(codeEditor().value).toBe('graph TD\n  Cur[Current]')
+    alertSpy.mockRestore()
+  })
+
+  it('keeps the hidden code panel and undo history when switching tabs', async () => {
+    saveWorkspace([{ id: 1, name: 'First', code: 'graph TD\n  A[Start] --> B[End]' }])
+    render(<MermaidVisualEditor />)
+    await screen.findByText('Start')
+
+    fireEvent.change(codeEditor(), {
+      target: { value: 'graph TD\n  A[Changed] --> B[End]' },
+    })
+    fireEvent.click(screen.getByTitle('Add diagram tab'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Hide code' }))
+    fireEvent.click(screen.getByText('First'))
+
+    expect(await screen.findByRole('button', { name: 'Show code' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Show code' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+
+    expect(codeEditor().value).toBe('graph TD\n  A[Start] --> B[End]')
+  })
+
+  it('reports copy results instead of failing silently', async () => {
+    saveWorkspace([{ id: 1, name: 'T', code: 'graph TD\n  A[Start] --> B[End]' }])
+    const writeText = vi.fn().mockResolvedValueOnce().mockRejectedValueOnce(new Error('denied'))
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    render(<MermaidVisualEditor />)
+    await screen.findByText('Start')
+    const exportSelect = screen.getByRole('combobox', { name: 'Export diagram' })
+
+    fireEvent.change(exportSelect, { target: { value: 'copy' } })
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Mermaid code copied.'))
+
+    fireEvent.change(exportSelect, { target: { value: 'copy' } })
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toBe('Could not copy to the clipboard.'),
+    )
+  })
+
+  it('exports the whole sequence diagram surface and reports export failures', async () => {
+    saveWorkspace([
+      {
+        id: 1,
+        name: 'Seq',
+        code: 'sequenceDiagram\n  participant A as Alice\n  participant B as Bob\n  A->>B: Hello',
+      },
+    ])
+    render(<MermaidVisualEditor />)
+    const surface = await screen.findByTestId('sequence-diagram-surface')
+    const exportSelect = screen.getByRole('combobox', { name: 'Export diagram' })
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    toPng.mockClear()
+
+    fireEvent.change(exportSelect, { target: { value: 'png' } })
+    await waitFor(() => expect(toPng).toHaveBeenCalledTimes(1))
+    const [element, options] = toPng.mock.calls[0]
+    expect(element).toBe(surface)
+    expect(element.contains(screen.getByTestId('sequence-minimap'))).toBe(false)
+    expect(options.style.transform).toBe('none')
+    expect(options.width).toBeGreaterThan(0)
+
+    toPng.mockRejectedValueOnce(new Error('canvas tainted'))
+    fireEvent.change(exportSelect, { target: { value: 'png' } })
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toBe('Could not export the PNG image.'),
+    )
+    clickSpy.mockRestore()
+  })
+
+  it('tells the user when a canvas edit cannot be written back to the code', async () => {
+    const code = 'graph TD\n  A --> B; B --> C'
+    saveWorkspace([{ id: 1, name: 'T', code }])
+    render(<MermaidVisualEditor />)
+
+    fireEvent.click(await screen.findByText('B'))
+    fireEvent.keyDown(document.body, { key: 'Delete' })
+
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toBe(
+        'This Mermaid syntax cannot be changed from the canvas. Edit the code instead.',
+      ),
+    )
+    expect(codeEditor().value).toBe(code)
+    // 캔버스에서 이미 사라진 노드를 코드 기준으로 다시 그린다.
+    expect(await screen.findByText('B')).toBeTruthy()
   })
 })

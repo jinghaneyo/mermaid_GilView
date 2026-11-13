@@ -1,6 +1,4 @@
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
+import { escapeRegExp, stripQuotedText } from './updateNodeLabelInMermaid'
 
 export function findNodeLineInMermaid(code: string, id: string): number | null {
   return findNodeLocationInMermaid(code, id)?.line ?? null
@@ -62,23 +60,27 @@ export function findSubgraphLocationInMermaid(
     'i',
   )
   const normalizedLabel = label?.trim()
-  const titlePattern = normalizedLabel
-    ? new RegExp(
-        `^\\s*subgraph\\s+\\S+\\s*\\[\\s*${escapeRegExp(normalizedLabel)}\\s*\\]`,
-        'i',
-      )
-    : null
+  const escapedLabel = normalizedLabel ? escapeRegExp(normalizedLabel) : ''
+  // 정확한 ID → `[제목]` → `"제목"` → 제목 일부 포함 순으로, 앞 방법으로 못 찾을 때만 다음 방법을 쓴다.
+  // 한 번에 검사하면 앞쪽의 다른 subgraph 제목에 글자가 들어 있을 때 그 줄을 잘못 고른다.
+  const matchers: Array<(line: string) => boolean> = [
+    (line) => declarationPattern.test(line),
+  ]
+  if (normalizedLabel) {
+    const titlePattern = new RegExp(
+      `^\\s*subgraph\\s+\\S+\\s*\\[\\s*${escapedLabel}\\s*\\]`,
+      'i',
+    )
+    const quotedTitlePattern = new RegExp(`^\\s*subgraph\\s+"${escapedLabel}"\\s*$`, 'i')
+    matchers.push(
+      (line) => titlePattern.test(line),
+      (line) => quotedTitlePattern.test(line),
+      (line) => /^\s*subgraph\s+/i.test(line) && line.includes(normalizedLabel),
+    )
+  }
 
-  const subgraphLine = lines.findIndex(
-    (line) =>
-      declarationPattern.test(line) ||
-      Boolean(titlePattern?.test(line)) ||
-      Boolean(
-        normalizedLabel &&
-          /^\\s*subgraph\\s+/i.test(line) &&
-          line.includes(normalizedLabel),
-      ),
-  )
+  const subgraphLine =
+    matchers.map((matches) => lines.findIndex(matches)).find((index) => index >= 0) ?? -1
 
   if (subgraphLine >= 0) {
     return locationForLine(lines[subgraphLine], subgraphLine, lineStartOffsets)
@@ -146,10 +148,6 @@ export function findMermaidElementAtOffset(
   containingTargets.sort((a, b) => a.length - b.length)
   const selected = containingTargets[0]
   return selected ? { id: selected.id, type: selected.type } : null
-}
-
-function stripQuotedText(line: string): string {
-  return line.replace(/"([^"\\]|\\.)*"/g, '""')
 }
 
 function getLineStartOffsets(lines: string[]): number[] {

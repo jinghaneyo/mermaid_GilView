@@ -25,6 +25,31 @@ function triggerDownload(url, filename) {
   a.download = filename
   a.click()
 }
+
+const MERMAID_FILE_EXTENSION_RE = /\.(mmd|md|txt|mmdf)$/i
+const MERMAID_FILE_EXTENSION_MESSAGE =
+  'Only .mmd, .md, .txt, and .mmdf files are supported.'
+const MERMAID_FENCE_RE = /^```mermaid[^\n]*\n([\s\S]*?)^```/m
+const CANVAS_EDIT_UNSUPPORTED_MESSAGE =
+  'This Mermaid syntax cannot be changed from the canvas. Edit the code instead.'
+const NOTHING_TO_EXPORT_MESSAGE = 'There is no diagram to export.'
+
+// 마크다운 문서라면 첫 ```mermaid 블록만 꺼낸다. 줄바꿈은 textarea와 같은 LF로 맞춘다.
+function extractMermaidText(text) {
+  const normalized = text.replace(/\r\n?/g, '\n')
+  return normalized.match(MERMAID_FENCE_RE)?.[1].replace(/\n$/, '') ?? normalized
+}
+
+function readMermaidTextFile(file, onLoad) {
+  if (!MERMAID_FILE_EXTENSION_RE.test(file.name)) {
+    window.alert(MERMAID_FILE_EXTENSION_MESSAGE)
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => onLoad(extractMermaidText(String(reader.result ?? '')))
+  reader.onerror = () => window.alert('Could not read the Mermaid file.')
+  reader.readAsText(file)
+}
 import { convertMermaid } from './lib/convertMermaid'
 import { scrollTopForLine } from './lib/codeEditorScroll'
 import { estimateLabelEditorRows } from './lib/labelEditorSizing'
@@ -41,12 +66,8 @@ import {
   getFlowBoundsFromClientRects,
   getTightExportFrame,
 } from './lib/exportImageFrame'
+import { updateNodeLabelInMermaid } from './lib/updateNodeLabelInMermaid'
 import {
-  formatMermaidLabel,
-  updateNodeLabelInMermaid,
-} from './lib/updateNodeLabelInMermaid'
-import {
-  formatNodeSizeComment,
   updateSubgraphSizeInMermaid,
   updateNodeSizeInMermaid,
 } from './lib/nodeSizeComments'
@@ -68,40 +89,10 @@ import {
 import EditableEdge, { EdgeLabelChangeContext } from './components/EditableEdge'
 
 /* ------------------------------------------------------------------ *
- * convertCanvasToMermaid: { nodes, edges } -> Mermaid text
- * ------------------------------------------------------------------ */
-export function convertCanvasToMermaid(nodes, edges) {
-  const lines = ['graph TD']
-
-  for (const node of nodes ?? []) {
-    const raw = node.data?.label
-    const label = raw !== undefined && raw !== '' ? raw : node.id
-    if (node.data?.customSize && node.width && node.height) {
-      lines.push(formatNodeSizeComment(node.id, {
-        width: node.width,
-        height: node.height,
-      }))
-    }
-    lines.push(`  ${node.id}[${formatMermaidLabel(label)}]`)
-  }
-
-  for (const edge of edges ?? []) {
-    const label = edge.label
-    if (typeof label === 'string' && label !== '') {
-      lines.push(`  ${edge.source} -->|${label}| ${edge.target}`)
-    } else {
-      lines.push(`  ${edge.source} --> ${edge.target}`)
-    }
-  }
-
-  return lines.join('\n')
-}
-
-/* ------------------------------------------------------------------ *
  * MermaidVisualEditor: bidirectional Mermaid code / canvas editor
  * ------------------------------------------------------------------ */
 
-const INITIAL_CODE = 'graph TD\nA[Start] --> B[End]'
+const INITIAL_CODE = 'graph TD\n  A[Start] --> B[End]'
 
 // Templates
 const TEMPLATES = {
@@ -444,12 +435,6 @@ function findSequenceElementAtLine(code, lineIndex) {
   return null
 }
 
-function parseSvgDimension(value) {
-  if (!value) return null
-  const match = String(value).trim().match(/^(\d+(?:\.\d+)?)(?:px)?$/)
-  return match ? Number(match[1]) : null
-}
-
 function estimateVisualTextWidth(text) {
   const value = String(text || '')
   try {
@@ -486,21 +471,6 @@ function fitVisualWidth(baseWidth, label, maxWidth = 640) {
     baseWidth,
     Math.min(maxWidth, estimateVisualTextWidth(label) + FIT_TEXT_HORIZONTAL_PADDING),
   )
-}
-
-function getSvgSize(svg, fallbackWidth, fallbackHeight) {
-  const svgTag = svg.match(/<svg\b[^>]*>/i)?.[0] ?? ''
-  const width = parseSvgDimension(svgTag.match(/\bwidth="([^"]+)"/i)?.[1])
-  const height = parseSvgDimension(svgTag.match(/\bheight="([^"]+)"/i)?.[1])
-  if (width && height) return { width, height }
-
-  const viewBox = svgTag.match(/\bviewBox="([^"]+)"/i)?.[1]
-  const parts = viewBox?.split(/\s+/).map(Number) ?? []
-  if (parts.length === 4 && Number.isFinite(parts[2]) && Number.isFinite(parts[3])) {
-    return { width: parts[2], height: parts[3] }
-  }
-
-  return { width: fallbackWidth, height: fallbackHeight }
 }
 
 function SequenceFragmentBox({ fragment, layout, colors, isDark }) {
@@ -733,7 +703,6 @@ function SequenceMessageArrow({
 
 function SequenceCanvas({
   code,
-  sequenceSvg,
   theme,
   showGrid,
   selectedElement,
@@ -764,7 +733,6 @@ function SequenceCanvas({
   const dragRef = useRef(null)
   const canvasPanRef = useRef(null)
   const minimapDraggingRef = useRef(false)
-  const elementRefs = useRef(new Map())
   const flashTimerRef = useRef(null)
   const markerIdRef = useRef(`sequence-arrow-${Math.random().toString(36).slice(2)}`)
   const selectedKey = sequenceElementKey(selectedElement)
@@ -1270,7 +1238,6 @@ function SequenceCanvas({
               id: participant.id,
             })
             const selected = key === selectedKey
-            const overlayVisibility = ''
             const boxStyle = {
               left: x - participantWidth / 2,
               width: participantWidth,
@@ -1308,10 +1275,6 @@ function SequenceCanvas({
                     aria-label={participant.label}
                     title="Click to select, double-click to edit, drag to reorder"
                     data-selected={selected ? 'true' : undefined}
-                    ref={(node) => {
-                      if (node) elementRefs.current.set(key, node)
-                      else elementRefs.current.delete(key)
-                    }}
                     onClick={() =>
                       onSelectElement({
                         type: 'participant',
@@ -1334,7 +1297,7 @@ function SequenceCanvas({
                     onMouseUp={(event) => {
                       finishParticipantDrag(event, participant.id)
                     }}
-                    className={`${commonClass} z-10 hover:border-blue-500 hover:ring-2 hover:ring-blue-400 ${overlayVisibility} ${
+                    className={`${commonClass} z-10 hover:border-blue-500 hover:ring-2 hover:ring-blue-400 ${
                       selected ? 'ring-2 ring-blue-500' : ''
                     } ${flashingKey === key ? 'diagram-node-flash sequence-object-flash' : ''}`}
                     style={{ ...boxStyle, top: topY }}
@@ -1406,10 +1369,6 @@ function SequenceCanvas({
                 title="Click to select, double-click to edit message"
                 data-selected={selected ? 'true' : undefined}
                 data-message-overlay="true"
-                ref={(node) => {
-                  if (node) elementRefs.current.set(key, node)
-                  else elementRefs.current.delete(key)
-                }}
                 onClick={() =>
                   onSelectElement({
                     type: 'message',
@@ -1600,7 +1559,9 @@ function EditorInner({
   setFitNodeWidthToText,
   leftWidth,
   setLeftWidth,
-  initialCodePanelHidden = false,
+  isCodePanelHidden,
+  setIsCodePanelHidden,
+  history,
   hideCodePanelToggle = false,
 }) {
   const [code, setCode] = useState(initialCode ?? INITIAL_CODE)
@@ -1613,11 +1574,10 @@ function EditorInner({
   const [searchQuery, setSearchQuery] = useState('')
   const [searchActiveIndex, setSearchActiveIndex] = useState(-1)
   const [diagramMode, setDiagramMode] = useState('flowchart')
-  const [sequenceSvg, setSequenceSvg] = useState('')
   const [selectedSequenceElement, setSelectedSequenceElement] = useState(null)
   const [sequenceFocusRequestKey, setSequenceFocusRequestKey] = useState(0)
   const [sequenceZoom, setSequenceZoom] = useState(1)
-  const [isCodePanelHidden, setIsCodePanelHidden] = useState(initialCodePanelHidden)
+  const [notice, setNotice] = useState(null)
   const [codeLineMetrics, setCodeLineMetrics] = useState({
     lineHeight: 22,
     paddingTop: 16,
@@ -1638,14 +1598,32 @@ function EditorInner({
 
   const seqRef = useRef(0)
   const debounceRef = useRef(null)
+  const noticeTimerRef = useRef(null)
 
   useEffect(() => {
     return () => {
       if (nodeFlashTimerRef.current) clearTimeout(nodeFlashTimerRef.current)
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
     }
   }, [])
 
+  const showNotice = (text, tone = 'info') => {
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+    setNotice({ text, tone })
+    noticeTimerRef.current = setTimeout(() => {
+      setNotice(null)
+      noticeTimerRef.current = null
+    }, 2500)
+  }
+
   const runParse = (text) => {
+    // 입력 후 예약된 파싱이 남아 있으면, 그 사이 되돌리기·템플릿 등으로 바뀐 코드를
+    // 예전 입력 내용으로 다시 덮어그리게 된다.
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current)
+      debounceRef.current = null
+    }
     const seq = ++seqRef.current
     if (isSequenceDiagram(text)) {
       setDiagramMode('sequence')
@@ -1653,29 +1631,23 @@ function EditorInner({
       setSearchActiveIndex(-1)
       setNodes([])
       setEdges([])
-      mermaid.initialize({
-        startOnLoad: false,
-        suppressErrorRendering: true,
-        theme: theme === 'dark' ? 'dark' : 'default',
-      })
+      mermaid.initialize({ startOnLoad: false, suppressErrorRendering: true })
+      // 화면은 SequenceCanvas가 직접 그린다. mermaid는 문법 검사에만 쓴다.
       mermaid
-        .render(`mermaid-sequence-${seq}`, text)
-        .then(({ svg }) => {
+        .parse(text)
+        .then(() => {
           if (seq !== seqRef.current) return
           setError(null)
-          setSequenceSvg(svg)
         })
         .catch((err) => {
           if (seq !== seqRef.current) return
           const message = err instanceof Error ? err.message : String(err)
           setError(message)
-          setSequenceSvg('')
         })
       return
     }
 
     setDiagramMode('flowchart')
-    setSequenceSvg('')
     setSelectedSequenceElement(null)
     convertMermaid(text, { fitNodeWidthToText }).then((res) => {
       if (seq !== seqRef.current) return
@@ -1776,11 +1748,6 @@ function EditorInner({
   }, [fitNodeWidthToText])
 
   useEffect(() => {
-    if (isSequenceDiagram(code)) runParse(code)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [theme])
-
-  useEffect(() => {
     if (onCodeChange) onCodeChange(code)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code])
@@ -1807,6 +1774,7 @@ function EditorInner({
       target: edge.target,
       label,
     })
+    if (nextCode === code) showNotice(CANVAS_EDIT_UNSUPPORTED_MESSAGE, 'error')
     setCode(nextCode)
     runParse(nextCode)
   }
@@ -2141,13 +2109,11 @@ function EditorInner({
       })),
     })
 
-    if (nextCode === code) return
+    // 코드에서 지울 수 없는 문법이면 nextCode가 그대로다. 캔버스는 이미 지워진 상태이므로
+    // 다시 파싱해 코드 기준으로 되돌린다.
+    if (nextCode === code) showNotice(CANVAS_EDIT_UNSUPPORTED_MESSAGE, 'error')
     setCode(nextCode)
     runParse(nextCode)
-  }
-
-  const onNodeDragStop = () => {
-    // Mermaid flowchart syntax does not persist freeform canvas positions.
   }
 
   const onSplitterMouseDown = (e) => {
@@ -2173,49 +2139,60 @@ function EditorInner({
   }
 
   const exportImage = async (type) => {
-    if (diagramMode === 'sequence') {
-      if (type === 'svg' && sequenceSvg) {
-        const url = URL.createObjectURL(
-          new Blob([sequenceSvg], { type: 'image/svg+xml' }),
+    const render = type === 'svg' ? toSvg : toPng
+    const backgroundColor = theme === 'dark' ? '#0f172a' : '#ffffff'
+    try {
+      if (diagramMode === 'sequence') {
+        // 화면에 보이는 영역·미니맵이 아니라 확대/이동 전의 다이어그램 전체를 찍는다.
+        const surface = sequencePreviewRef.current?.querySelector(
+          '[data-testid="sequence-diagram-surface"]',
         )
-        triggerDownload(url, 'diagram.svg')
-        setTimeout(() => URL.revokeObjectURL(url), 1000)
+        if (!surface) {
+          showNotice(NOTHING_TO_EXPORT_MESSAGE)
+          return
+        }
+        const width = Number.parseFloat(surface.style.width)
+        const height = Number.parseFloat(surface.style.height)
+        const dataUrl = await render(surface, {
+          backgroundColor,
+          width,
+          height,
+          style: { transform: 'none' },
+        })
+        triggerDownload(dataUrl, `diagram.${type}`)
         return
       }
 
-      if (sequencePreviewRef.current) {
-        const dataUrl = await toPng(sequencePreviewRef.current, {
-          backgroundColor: theme === 'dark' ? '#0f172a' : '#ffffff',
-        })
-        triggerDownload(dataUrl, 'diagram.png')
+      const viewport = containerRef.current?.querySelector('.react-flow__viewport')
+      const all = nodesRef.current
+      if (!viewport || all.length === 0) {
+        showNotice(NOTHING_TO_EXPORT_MESSAGE)
+        return
       }
-      return
+      const bounds = getRenderedDiagramBounds(viewport) ?? reactFlow.getNodesBounds(all)
+      const frame = getTightExportFrame(bounds)
+      const dataUrl = await render(viewport, {
+        backgroundColor,
+        width: frame.width,
+        height: frame.height,
+        style: {
+          width: `${frame.width}px`,
+          height: `${frame.height}px`,
+          transform: frame.transform,
+        },
+      })
+      triggerDownload(dataUrl, `diagram.${type}`)
+    } catch {
+      showNotice(`Could not export the ${type.toUpperCase()} image.`, 'error')
     }
-
-    const viewport = document.querySelector('.react-flow__viewport')
-    const all = nodesRef.current
-    if (!viewport || all.length === 0) return
-    const bounds = getRenderedDiagramBounds(viewport) ?? reactFlow.getNodesBounds(all)
-    const frame = getTightExportFrame(bounds)
-    const opts = {
-      backgroundColor: theme === 'dark' ? '#0f172a' : '#ffffff',
-      width: frame.width,
-      height: frame.height,
-      style: {
-        width: `${frame.width}px`,
-        height: `${frame.height}px`,
-        transform: frame.transform,
-      },
-    }
-    const dataUrl = await (type === 'svg' ? toSvg : toPng)(viewport, opts)
-    triggerDownload(dataUrl, `diagram.${type}`)
   }
 
   const copyCode = async () => {
     try {
       await navigator.clipboard.writeText(code)
+      showNotice('Mermaid code copied.')
     } catch {
-
+      showNotice('Could not copy to the clipboard.', 'error')
     }
   }
 
@@ -2225,8 +2202,7 @@ function EditorInner({
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
-  const historyRef = useRef([code])
-  const indexRef = useRef(0)
+  // 되돌리기 기록(history.entries/index)은 탭을 바꿔도 남도록 상위 컴포넌트가 탭별로 보관한다.
   const isUndoRedoRef = useRef(false)
   const lastEditTimeRef = useRef(0)
 
@@ -2235,39 +2211,50 @@ function EditorInner({
       isUndoRedoRef.current = false
       return
     }
-    const hist = historyRef.current
-    if (hist[indexRef.current] === code) return
+    if (history.entries[history.index] === code) return
     const now = Date.now()
     const coalesce = now - lastEditTimeRef.current < 600
     lastEditTimeRef.current = now
-    const next = hist.slice(0, indexRef.current + 1)
+    const next = history.entries.slice(0, history.index + 1)
     if (coalesce && next.length > 1) {
       next[next.length - 1] = code
     } else {
       next.push(code)
       if (next.length > 100) next.shift()
     }
-    historyRef.current = next
-    indexRef.current = next.length - 1
+    history.entries = next
+    history.index = next.length - 1
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code])
   const applyCodeAndParse = (text) => {
     setCode(text)
     runParse(text)
   }
+  const handleCodeDragOver = (event) => {
+    if (!Array.from(event.dataTransfer?.types ?? []).includes('Files')) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+  const handleCodeDrop = (event) => {
+    const file = event.dataTransfer?.files?.[0]
+    if (!file) return
+    event.preventDefault()
+    event.stopPropagation()
+    readMermaidTextFile(file, applyCodeAndParse)
+  }
 
   const undo = () => {
-    if (indexRef.current > 0) {
-      indexRef.current -= 1
+    if (history.index > 0) {
+      history.index -= 1
       isUndoRedoRef.current = true
-      applyCodeAndParse(historyRef.current[indexRef.current])
+      applyCodeAndParse(history.entries[history.index])
     }
   }
   const redo = () => {
-    if (indexRef.current < historyRef.current.length - 1) {
-      indexRef.current += 1
+    if (history.index < history.entries.length - 1) {
+      history.index += 1
       isUndoRedoRef.current = true
-      applyCodeAndParse(historyRef.current[indexRef.current])
+      applyCodeAndParse(history.entries[history.index])
     }
   }
 
@@ -2506,15 +2493,19 @@ function EditorInner({
             <div className="relative min-h-0 flex-1">
             <textarea
               ref={codeTextareaRef}
+              aria-label="Mermaid code"
               value={code}
               onChange={handleCodeChange}
               onClick={handleCodeClick}
               onKeyDown={onCodeKeyDown}
               onScroll={handleCodeScroll}
+              onDragOver={handleCodeDragOver}
+              onDrop={handleCodeDrop}
               spellCheck={false}
               wrap="off"
+              title="Drop .mmd, .md, .txt, or .mmdf files here"
               className="code-editor-textarea h-full w-full resize-none bg-slate-900 p-4 font-mono text-sm leading-relaxed text-slate-100 outline-none"
-              placeholder={'graph TD\\n  A[Start] --> B[End]'}
+              placeholder={'graph TD\n  A[Start] --> B[End]'}
             />
               {highlightedCodeLine && (
                 <div
@@ -2748,6 +2739,18 @@ function EditorInner({
         </div>
 
         <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+        {/* 화면 읽기 프로그램이 바뀐 글을 읽도록 안내 영역은 항상 두고 내용만 바꾼다. */}
+        <div role="status" className="pointer-events-none absolute left-1/2 top-3 z-30 -translate-x-1/2">
+          {notice && (
+            <div
+              className={`rounded-md px-3 py-1.5 text-xs font-medium shadow ${
+                notice.tone === 'error' ? 'bg-red-600 text-white' : 'bg-slate-800 text-white'
+              }`}
+            >
+              {notice.text}
+            </div>
+          )}
+        </div>
         {diagramMode === 'sequence' ? (
           <div
             ref={sequencePreviewRef}
@@ -2756,7 +2759,6 @@ function EditorInner({
           >
             <SequenceCanvas
               code={code}
-              sequenceSvg={sequenceSvg}
               theme={theme}
               showGrid={showGrid}
               selectedElement={selectedSequenceElement}
@@ -2806,7 +2808,6 @@ function EditorInner({
                   onDelete={onDelete}
                   onNodeClick={handleCanvasNodeClick}
                   onPaneClick={handlePaneClick}
-                  onNodeDragStop={onNodeDragStop}
                   deleteKeyCode={['Backspace', 'Delete']}
                   fitView
                   fitViewOptions={{ padding: 0.2 }}
@@ -2924,7 +2925,6 @@ function TabBar({ tabs, activeId, onSelect, onAdd, onClose, onRename, onReorder,
   )
 }
 
-const NEW_TAB_CODE = 'graph TD\n  A[Start] --> B[End]'
 const STORAGE_KEY = 'mermaid-gilview-workspace'
 const DEFAULT_WORKSPACE = {
   tabs: [{ id: 1, name: 'Diagram 1', code: INITIAL_CODE }],
@@ -2957,6 +2957,8 @@ function loadEmbedWorkspace() {
     if (!encodedCode) return null
     const theme = params.get('theme')
     return {
+      // 임베드 화면은 링크로 받은 다이어그램만 보여준다. 사용자의 저장된 작업공간에 쓰지 않는다.
+      embed: true,
       tabs: [{ id: 1, name: 'Diagram 1', code: decodeBase64UrlUtf8(encodedCode) }],
       activeId: 1,
       settings: {
@@ -2971,21 +2973,54 @@ function loadEmbedWorkspace() {
   }
 }
 
+// 저장소·백업 파일에서 읽은 작업공간을 검사한다. 코드가 문자열이 아닌 탭은 버리고,
+// 탭 ID가 없거나 겹치면 새로 매기며, 현재 탭이 목록에 없으면 첫 탭으로 맞춘다.
+// 쓸 수 있는 탭이 하나도 없으면 null.
+function normalizeWorkspace(data, fallbackSettings) {
+  if (!data || !Array.isArray(data.tabs)) return null
+
+  const validTabs = data.tabs.filter((tab) => tab && typeof tab.code === 'string')
+  if (validTabs.length === 0) return null
+
+  const usedIds = new Set()
+  let nextId = Math.max(
+    0,
+    ...validTabs.map((tab) => (Number.isInteger(tab.id) ? tab.id : 0)),
+  )
+  const tabs = validTabs.map((tab, index) => {
+    const reusable = Number.isInteger(tab.id) && tab.id > 0 && !usedIds.has(tab.id)
+    const id = reusable ? tab.id : ++nextId
+    usedIds.add(id)
+    const name =
+      typeof tab.name === 'string' && tab.name.trim() ? tab.name : `Diagram ${index + 1}`
+    return { id, name, code: tab.code }
+  })
+
+  const settings = data.settings ?? {}
+  return {
+    tabs,
+    activeId: tabs.some((tab) => tab.id === data.activeId) ? data.activeId : tabs[0].id,
+    settings: {
+      ...fallbackSettings,
+      ...(settings.theme === 'light' || settings.theme === 'dark'
+        ? { theme: settings.theme }
+        : {}),
+      ...(typeof settings.showGrid === 'boolean' ? { showGrid: settings.showGrid } : {}),
+      ...(typeof settings.fitNodeWidthToText === 'boolean'
+        ? { fitNodeWidthToText: settings.fitNodeWidthToText }
+        : {}),
+      ...(Number.isFinite(settings.leftWidth) ? { leftWidth: settings.leftWidth } : {}),
+    },
+  }
+}
+
 function loadWorkspace() {
   const embedWorkspace = loadEmbedWorkspace()
   if (embedWorkspace) return embedWorkspace
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return DEFAULT_WORKSPACE
-    const data = JSON.parse(raw)
-    if (!data || !Array.isArray(data.tabs) || data.tabs.length === 0) {
-      return DEFAULT_WORKSPACE
-    }
-    return {
-      tabs: data.tabs,
-      activeId: data.activeId ?? data.tabs[0].id,
-      settings: { ...DEFAULT_WORKSPACE.settings, ...(data.settings ?? {}) },
-    }
+    return normalizeWorkspace(JSON.parse(raw), DEFAULT_WORKSPACE.settings) ?? DEFAULT_WORKSPACE
   } catch {
     return DEFAULT_WORKSPACE
   }
@@ -3005,9 +3040,22 @@ export default function MermaidVisualEditor() {
     init.settings.fitNodeWidthToText,
   )
   const [leftWidth, setLeftWidth] = useState(init.settings.leftWidth)
+  const [codePanelHidden, setCodePanelHidden] = useState(init.settings.codePanelHidden)
+  // 백업 복원 때 탭 번호가 같아도 편집기를 새로 만들도록 key에 붙이는 값
+  const [workspaceVersion, setWorkspaceVersion] = useState(0)
+
+  // 탭별 되돌리기 기록. 탭을 바꾸면 편집기를 새로 만들기 때문에 여기서 보관한다.
+  const historiesRef = useRef(new Map())
+  const historyFor = (tab) => {
+    if (!historiesRef.current.has(tab.id)) {
+      historiesRef.current.set(tab.id, { entries: [tab.code], index: 0 })
+    }
+    return historiesRef.current.get(tab.id)
+  }
 
   const saveTimer = useRef(null)
   useEffect(() => {
+    if (init.embed) return
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(() => {
       try {
@@ -3025,13 +3073,13 @@ export default function MermaidVisualEditor() {
       }
     }, 400)
     return () => saveTimer.current && clearTimeout(saveTimer.current)
-  }, [tabs, activeId, theme, showGrid, fitNodeWidthToText, leftWidth])
+  }, [init.embed, tabs, activeId, theme, showGrid, fitNodeWidthToText, leftWidth])
 
   const active = tabs.find((tab) => tab.id === activeId) ?? tabs[0]
 
   const updateActiveCode = (code) => {
     setTabs((currentTabs) =>
-      currentTabs.map((tab) => (tab.id === activeId ? { ...tab, code } : tab)),
+      currentTabs.map((tab) => (tab.id === active.id ? { ...tab, code } : tab)),
     )
   }
 
@@ -3057,14 +3105,12 @@ export default function MermaidVisualEditor() {
   const jsonInputRef = useRef(null)
 
   const importMmd = (file) => {
-    const reader = new FileReader()
-    reader.onload = () => {
+    readMermaidTextFile(file, (text) => {
       const id = idRef.current++
-      const name = file.name.replace(/\.(mmd|md|txt)$/i, '') || `Diagram ${tabs.length + 1}`
-      setTabs((currentTabs) => [...currentTabs, { id, name, code: String(reader.result) }])
+      const name = file.name.replace(MERMAID_FILE_EXTENSION_RE, '') || `Diagram ${tabs.length + 1}`
+      setTabs((currentTabs) => [...currentTabs, { id, name, code: text }])
       setActiveId(id)
-    }
-    reader.readAsText(file)
+    })
   }
 
   const backupWorkspace = () => {
@@ -3085,20 +3131,26 @@ export default function MermaidVisualEditor() {
     const reader = new FileReader()
     reader.onload = () => {
       try {
-        const data = JSON.parse(String(reader.result))
-        if (!Array.isArray(data.tabs) || data.tabs.length === 0) return
-        if (!window.confirm('Replace the current workspace with the backup file?')) return
-        setTabs(data.tabs)
-        setActiveId(data.activeId ?? data.tabs[0].id)
-        if (data.settings) {
-          setTheme(data.settings.theme ?? theme)
-          setShowGrid(data.settings.showGrid ?? showGrid)
-          setFitNodeWidthToText(
-            data.settings.fitNodeWidthToText ?? fitNodeWidthToText,
-          )
-          setLeftWidth(data.settings.leftWidth ?? leftWidth)
+        const workspace = normalizeWorkspace(JSON.parse(String(reader.result)), {
+          theme,
+          showGrid,
+          fitNodeWidthToText,
+          leftWidth,
+        })
+        if (!workspace) {
+          window.alert('The backup file has no diagrams to restore.')
+          return
         }
-        idRef.current = Math.max(0, ...data.tabs.map((tab) => tab.id)) + 1
+        if (!window.confirm('Replace the current workspace with the backup file?')) return
+        historiesRef.current.clear()
+        setWorkspaceVersion((version) => version + 1)
+        setTabs(workspace.tabs)
+        setActiveId(workspace.activeId)
+        setTheme(workspace.settings.theme)
+        setShowGrid(workspace.settings.showGrid)
+        setFitNodeWidthToText(workspace.settings.fitNodeWidthToText)
+        setLeftWidth(workspace.settings.leftWidth)
+        idRef.current = Math.max(0, ...workspace.tabs.map((tab) => tab.id)) + 1
       } catch {
         window.alert('Could not read the backup file.')
       }
@@ -3113,18 +3165,19 @@ export default function MermaidVisualEditor() {
     const id = idRef.current++
     setTabs((currentTabs) => [
       ...currentTabs,
-      { id, name: `Diagram ${currentTabs.length + 1}`, code: NEW_TAB_CODE },
+      { id, name: `Diagram ${currentTabs.length + 1}`, code: INITIAL_CODE },
     ])
     setActiveId(id)
   }
 
   const closeTab = (id) => {
     const tab = tabs.find((currentTab) => currentTab.id === id)
-    if (tab && tab.code.trim() && tab.code.trim() !== NEW_TAB_CODE.trim()) {
+    if (tab && tab.code.trim() && tab.code.trim() !== INITIAL_CODE.trim()) {
       if (!window.confirm(`Close '${tab.name}'? Unsaved content will be lost.`)) {
         return
       }
     }
+    historiesRef.current.delete(id)
     setTabs((currentTabs) => {
       if (currentTabs.length <= 1) return currentTabs
       const index = currentTabs.findIndex((currentTab) => currentTab.id === id)
@@ -3153,7 +3206,7 @@ export default function MermaidVisualEditor() {
               type="button"
               className={tabActionBtn}
               onClick={() => mmdInputRef.current?.click()}
-              title="Import .mmd/.txt as a new tab"
+              title="Import .mmd/.md/.txt/.mmdf as a new tab"
             >
               Import
             </button>
@@ -3176,7 +3229,7 @@ export default function MermaidVisualEditor() {
             <input
               ref={mmdInputRef}
               type="file"
-              accept=".mmd,.md,.txt"
+              accept=".mmd,.md,.txt,.mmdf"
               className="hidden"
               onChange={(event) => {
                 const file = event.target.files?.[0]
@@ -3199,10 +3252,11 @@ export default function MermaidVisualEditor() {
         }
       />
       <div className="min-h-0 flex-1">
-        <ReactFlowProvider key={activeId}>
+        <ReactFlowProvider key={`${workspaceVersion}-${active.id}`}>
           <EditorInner
-            key={activeId}
+            key={`${workspaceVersion}-${active.id}`}
             initialCode={active.code}
+            history={historyFor(active)}
             onCodeChange={updateActiveCode}
             theme={theme}
             setTheme={setTheme}
@@ -3212,7 +3266,8 @@ export default function MermaidVisualEditor() {
             setFitNodeWidthToText={setFitNodeWidthToText}
             leftWidth={leftWidth}
             setLeftWidth={setLeftWidth}
-            initialCodePanelHidden={init.settings.codePanelHidden}
+            isCodePanelHidden={codePanelHidden}
+            setIsCodePanelHidden={setCodePanelHidden}
             hideCodePanelToggle={init.settings.hideCodePanelToggle}
           />
         </ReactFlowProvider>

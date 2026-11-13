@@ -106,4 +106,29 @@ describe('findMermaidElementAtOffset', () => {
       ]),
     ).toEqual({ id: '__group_Cluster', type: 'group' })
   })
+
+  it('prefers the exact subgraph id over another title that contains the label', () => {
+    const code = [
+      'graph TD',
+      '  subgraph Pre["Input checks"]',
+      '    A',
+      '  end',
+      '  subgraph Input',
+      '    B',
+      '  end',
+    ].join('\n')
+
+    expect(findSubgraphLocationInMermaid(code, 'Input', 'Input')?.line).toBe(4)
+  })
+
+  it('finds a subgraph declared only with a quoted title', () => {
+    // mermaid는 `subgraph "My Group"` 에 subGraph0 같은 자동 ID를 붙인다.
+    const code = 'graph TD\n  subgraph "My Group"\n    A --> B\n  end'
+
+    expect(findSubgraphLocationInMermaid(code, 'subGraph0', 'My Group')).toEqual({
+      line: 1,
+      start: 9,
+      end: 30,
+    })
+  })
 })

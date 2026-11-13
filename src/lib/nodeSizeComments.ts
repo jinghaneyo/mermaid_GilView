@@ -1,3 +1,5 @@
+import { escapeRegExp, stripQuotedText } from './updateNodeLabelInMermaid'
+
 export interface NodeSize {
   width: number
   height: number
@@ -125,12 +127,4 @@ function findSubgraphDeclarationLine(lines: string[], id: string): number {
   const declarationPattern = new RegExp(`^\\s*subgraph\\s+${escapedId}(\\b|\\s|\\[|$)`)
 
   return lines.findIndex((line) => declarationPattern.test(line))
-}
-
-function stripQuotedText(line: string): string {
-  return line.replace(/"([^"\\]|\\.)*"/g, '""')
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }

@@ -1,5 +1,10 @@
-function escapeRegExp(value: string): string {
+export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// 큰따옴표로 감싼 라벨 안의 글자가 노드 ID나 괄호로 오인되지 않도록 비운다.
+export function stripQuotedText(line: string): string {
+  return line.replace(/"([^"\\]|\\.)*"/g, '""')
 }
 
 function normalizeLabel(value: string): string {
