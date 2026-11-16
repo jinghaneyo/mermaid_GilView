@@ -87,6 +87,7 @@ import {
   updateSequenceMessageLabel,
 } from './lib/sequenceDiagram'
 import EditableEdge, { EdgeLabelChangeContext } from './components/EditableEdge'
+import { version as APP_VERSION } from '../package.json'
 
 /* ------------------------------------------------------------------ *
  * MermaidVisualEditor: bidirectional Mermaid code / canvas editor
@@ -3226,6 +3227,9 @@ export default function MermaidVisualEditor() {
             >
               Restore
             </button>
+            <span className="px-2 text-xs text-slate-400" title="Mermaid GilView version">
+              v{APP_VERSION}
+            </span>
             <input
               ref={mmdInputRef}
               type="file"

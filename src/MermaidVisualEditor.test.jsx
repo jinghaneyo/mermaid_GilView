@@ -2,6 +2,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { toPng } from 'html-to-image'
 import MermaidVisualEditor from './MermaidVisualEditor'
+import { version } from '../package.json'
 
 vi.mock('html-to-image', () => ({
   toPng: vi.fn(async () => 'data:image/png;base64,'),
@@ -1302,6 +1303,12 @@ describe('MermaidVisualEditor: workspace safety and sync', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ tabs, activeId, settings: {} }))
   const savedWorkspace = () => JSON.parse(localStorage.getItem(STORAGE_KEY))
   const codeEditor = () => screen.getByLabelText('Mermaid code')
+
+  it('shows the app version from package.json', () => {
+    render(<MermaidVisualEditor />)
+
+    expect(screen.getByTitle('Mermaid GilView version').textContent).toBe(`v${version}`)
+  })
 
   it('does not overwrite the saved workspace when opened from an embed link', async () => {
     const tabs = [

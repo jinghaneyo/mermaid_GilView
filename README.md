@@ -4,17 +4,21 @@ Mermaid GilView는 Mermaid flowchart 코드를 왼쪽에서 편집하고, 오른
 
 코드를 수정하면 다이어그램이 갱신되고, 캔버스에서 노드 이동, 라벨 수정, 연결선 추가/삭제를 하면 Mermaid 코드에도 반영됩니다. 작업 내용은 브라우저 `localStorage`에 저장되며 서버로 전송되지 않습니다.
 
+**바로 실행하기:** https://jinghaneyo.github.io/mermaid_GilView/ (설치 없이 브라우저에서 최신 버전이 열립니다.)
+
 ## 설치 없이 사용하기
 
-가장 간단한 방법은 GitHub Release에서 단일 HTML 패키지를 내려받는 것입니다.
+위 주소를 여는 것이 가장 간단합니다. 인터넷 없이 쓰려면 GitHub Release에서 단일 HTML 패키지를 내려받습니다.
 
 1. Releases 페이지로 이동합니다.
    - https://github.com/jinghaneyo/mermaid_GilView/releases
-2. 최신 릴리즈의 `mermaid-gilview-v1.0.0.zip` 파일을 다운로드합니다.
+2. 최신 릴리즈의 `mermaid-gilview-v<버전>-package.zip` 파일을 다운로드합니다.
 3. zip 파일을 압축 해제합니다.
-4. `mermaid-gilview.html` 파일을 브라우저로 엽니다.
+4. `standalone/mermaid-gilview.html` 파일을 브라우저로 엽니다.
 
 이 방식은 Node.js, npm, 개발 서버가 필요 없습니다. 파일을 더블클릭해서 열 수 있는 정적 HTML 앱입니다.
+
+지금 쓰는 버전은 화면 오른쪽 위 탭 줄 끝에 `v1.1.0` 같은 형식으로 표시됩니다.
 
 ## 소스에서 실행하기
 
